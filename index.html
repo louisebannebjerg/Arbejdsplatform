@@ -1218,7 +1218,7 @@
     }
 
     function EditDeptTaskModal({ dept, task, users, currentUserId, onClose, onSave }) {
-      const supportsVisibility = dept.id === 'kontor';
+      const supportsVisibility = dept.id === 'kontor' || dept.id === 'reception';
       const [title, setTitle] = useState(task.title || '');
       const [description, setDescription] = useState(task.description || '');
       const [priority, setPriority] = useState(task.priority || 'normal');
@@ -1613,8 +1613,8 @@
       const [visibility, setVisibility] = useState('all');
       const [visibleTo, setVisibleTo] = useState([]);
 
-      // Only Kontor supports visibility for now
-      const supportsVisibility = dept.id === 'kontor';
+      // Reception and Kontor support visibility
+      const supportsVisibility = dept.id === 'kontor' || dept.id === 'reception';
 
       const toggleVisibleTo = (userId) => {
         setVisibleTo(prev => prev.includes(userId)
