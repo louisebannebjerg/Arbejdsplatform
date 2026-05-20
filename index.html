@@ -983,13 +983,14 @@
       const [editingNoteId, setEditingNoteId] = useState(null);
       const [editTask, setEditTask] = useState(null);
 
-      // Apply visibility filtering (currently only Kontor uses this)
+      // Apply visibility filtering (Kontor and Reception)
       const visibleTasks = tasks.filter(t => {
         const visibility = t.visibility || 'all';
         if (visibility === 'all') return true;
         if (visibility === 'private') return t.createdBy === userProfile.id;
         if (visibility === 'specific') {
           if (t.createdBy === userProfile.id) return true;
+          if (t.assigneeId === userProfile.id) return true;
           if ((t.visibleTo || []).includes(userProfile.id)) return true;
           return false;
         }
@@ -1051,7 +1052,9 @@
                     return (
                       <div key={status} style={styles.receptionTaskGroup}>
                         <div style={styles.receptionGroupLabel}>{label} · {list.length}</div>
-                        {list.map(task => (
+                        {list.map(task => {
+                          const taskAssignee = (users || []).find(u => u.id === task.assigneeId);
+                          return (
                           <div key={task.id} style={styles.receptionTaskCard}>
                             <div style={styles.receptionTaskMain}>
                               <div style={{...styles.taskTitle, textDecoration: status === 'done' ? 'line-through' : 'none', opacity: status === 'done' ? 0.5 : 1}}>
@@ -1063,6 +1066,15 @@
                               {task.description && <div style={styles.taskDesc}>{task.description}</div>}
                               <div style={styles.receptionTaskMeta}>
                                 <span>Af {task.createdByName}</span>
+                                {taskAssignee && (
+                                  <>
+                                    <span>·</span>
+                                    <span style={styles.assigneeChipInline}>
+                                      <span style={styles.assigneeDotSmall}>{taskAssignee.name[0].toUpperCase()}</span>
+                                      {taskAssignee.name.split(' ')[0]}
+                                    </span>
+                                  </>
+                                )}
                                 <span>·</span>
                                 <span>{new Date(task.createdAt).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' })}</span>
                                 {task.dueDate && (
@@ -1078,7 +1090,7 @@
                               {status !== 'todo' && <button onClick={() => onTaskStatusChange(task.id, 'todo')} style={styles.miniBtn} title="At gøre"><Icon name="circle" size={13} /></button>}
                               {status !== 'in_progress' && <button onClick={() => onTaskStatusChange(task.id, 'in_progress')} style={styles.miniBtn} title="I gang"><Icon name="clock" size={13} /></button>}
                               {status !== 'done' && <button onClick={() => onTaskStatusChange(task.id, 'done')} style={styles.miniBtn} title="Færdig"><Icon name="check-circle" size={13} /></button>}
-                              {(userProfile.role === 'leder' || task.createdBy === userProfile.id) && (
+                              {(userProfile.role === 'leder' || task.createdBy === userProfile.id || task.assigneeId === userProfile.id) && (
                                 <>
                                   <button onClick={() => setEditTask(task)} style={styles.miniBtn} title="Rediger"><Icon name="edit" size={13} /></button>
                                   <button onClick={() => onTaskDelete(task.id)} style={{...styles.miniBtn, color: 'var(--red)'}} title="Slet"><Icon name="trash" size={13} /></button>
@@ -1086,7 +1098,8 @@
                               )}
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     );
                   })}
@@ -1229,6 +1242,7 @@
       const [description, setDescription] = useState(task.description || '');
       const [priority, setPriority] = useState(task.priority || 'normal');
       const [dueDate, setDueDate] = useState(task.dueDate || '');
+      const [assigneeId, setAssigneeId] = useState(task.assigneeId || '');
       const [visibility, setVisibility] = useState(task.visibility || 'all');
       const [visibleTo, setVisibleTo] = useState(task.visibleTo || []);
 
@@ -1240,7 +1254,7 @@
 
       const submit = () => {
         if (!title.trim()) return;
-        const data = { title: title.trim(), description: description.trim(), priority, dueDate };
+        const data = { title: title.trim(), description: description.trim(), priority, dueDate, assigneeId };
         if (supportsVisibility) {
           data.visibility = visibility;
           data.visibleTo = visibility === 'specific' ? visibleTo : [];
@@ -1259,17 +1273,23 @@
 
           <div style={styles.formRow}>
             <div style={{flex: 1}}>
-              <label style={styles.label}>Prioritet</label>
-              <div style={styles.roleGroup}>
-                {[{v:'low',l:'Lav'},{v:'normal',l:'Normal'},{v:'high',l:'Høj'}].map(p => (
-                  <button key={p.v} onClick={() => setPriority(p.v)} style={priority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
-                ))}
-              </div>
+              <label style={styles.label}>Tildel til</label>
+              <select style={styles.input} value={assigneeId} onChange={e => setAssigneeId(e.target.value)}>
+                <option value="">Ikke tildelt</option>
+                {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
             </div>
             <div style={{flex: 1}}>
               <label style={styles.label}>Deadline</label>
               <input style={styles.input} type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} />
             </div>
+          </div>
+
+          <label style={{...styles.label, marginTop: 18}}>Prioritet</label>
+          <div style={styles.roleGroup}>
+            {[{v:'low',l:'Lav'},{v:'normal',l:'Normal'},{v:'high',l:'Høj'}].map(p => (
+              <button key={p.v} onClick={() => setPriority(p.v)} style={priority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
+            ))}
           </div>
           {supportsVisibility && (
             <>
@@ -1627,6 +1647,7 @@
       const [description, setDescription] = useState('');
       const [priority, setPriority] = useState('normal');
       const [dueDate, setDueDate] = useState('');
+      const [assigneeId, setAssigneeId] = useState('');
       const [visibility, setVisibility] = useState('all');
       const [visibleTo, setVisibleTo] = useState([]);
 
@@ -1646,6 +1667,7 @@
           description: description.trim(),
           priority,
           dueDate,
+          assigneeId,
         };
         if (supportsVisibility) {
           data.visibility = visibility;
@@ -1665,17 +1687,23 @@
 
           <div style={styles.formRow}>
             <div style={{flex: 1}}>
-              <label style={styles.label}>Prioritet</label>
-              <div style={styles.roleGroup}>
-                {[{v:'low',l:'Lav'},{v:'normal',l:'Normal'},{v:'high',l:'Høj'}].map(p => (
-                  <button key={p.v} onClick={() => setPriority(p.v)} style={priority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
-                ))}
-              </div>
+              <label style={styles.label}>Tildel til</label>
+              <select style={styles.input} value={assigneeId} onChange={e => setAssigneeId(e.target.value)}>
+                <option value="">Ikke tildelt</option>
+                {(users || []).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
             </div>
             <div style={{flex: 1}}>
               <label style={styles.label}>Deadline</label>
               <input style={styles.input} type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} />
             </div>
+          </div>
+
+          <label style={{...styles.label, marginTop: 18}}>Prioritet</label>
+          <div style={styles.roleGroup}>
+            {[{v:'low',l:'Lav'},{v:'normal',l:'Normal'},{v:'high',l:'Høj'}].map(p => (
+              <button key={p.v} onClick={() => setPriority(p.v)} style={priority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
+            ))}
           </div>
 
           {supportsVisibility && (
@@ -1865,7 +1893,7 @@
 
       if (!task) return null;
       const assignee = users.find(u => u.id === task.assigneeId);
-      const canEdit = userProfile.role === 'leder' || task.createdBy === userProfile.id;
+      const canEdit = userProfile.role === 'leder' || task.createdBy === userProfile.id || task.assigneeId === userProfile.id;
 
       const startEdit = () => {
         setEditTitle(task.title || '');
@@ -2308,6 +2336,8 @@
       receptionTaskActions: { display: 'flex', gap: 4, flexShrink: 0 },
       inlinePriority: { color: 'var(--red)', marginRight: 6, fontSize: 14 },
       deadlineTag: { color: 'var(--warm)', fontWeight: 500 },
+      assigneeChipInline: { display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--ink-soft)' },
+      assigneeDotSmall: { width: 16, height: 16, borderRadius: '50%', background: 'var(--ink)', color: 'var(--bg)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 600 },
       handoverInput: { background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 3, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 },
       handoverInputRow: { display: 'flex', alignItems: 'center', gap: 10 },
       urgentToggle: { display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--ink-soft)', cursor: 'pointer', userSelect: 'none' },
