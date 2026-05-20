@@ -1065,6 +1065,12 @@
                                 <span>Af {task.createdByName}</span>
                                 <span>·</span>
                                 <span>{new Date(task.createdAt).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' })}</span>
+                                {task.dueDate && (
+                                  <>
+                                    <span>·</span>
+                                    <span style={styles.deadlineTag}>📅 Deadline {new Date(task.dueDate).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' })}</span>
+                                  </>
+                                )}
                                 {task.updatedAt && <span style={{fontStyle: 'italic'}}>· redigeret</span>}
                               </div>
                             </div>
@@ -1222,6 +1228,7 @@
       const [title, setTitle] = useState(task.title || '');
       const [description, setDescription] = useState(task.description || '');
       const [priority, setPriority] = useState(task.priority || 'normal');
+      const [dueDate, setDueDate] = useState(task.dueDate || '');
       const [visibility, setVisibility] = useState(task.visibility || 'all');
       const [visibleTo, setVisibleTo] = useState(task.visibleTo || []);
 
@@ -1233,7 +1240,7 @@
 
       const submit = () => {
         if (!title.trim()) return;
-        const data = { title: title.trim(), description: description.trim(), priority };
+        const data = { title: title.trim(), description: description.trim(), priority, dueDate };
         if (supportsVisibility) {
           data.visibility = visibility;
           data.visibleTo = visibility === 'specific' ? visibleTo : [];
@@ -1249,11 +1256,20 @@
           <input style={styles.input} value={title} onChange={e => setTitle(e.target.value)} autoFocus />
           <label style={{...styles.label, marginTop: 18}}>Beskrivelse</label>
           <textarea style={styles.textarea} value={description} onChange={e => setDescription(e.target.value)} rows={4} />
-          <label style={{...styles.label, marginTop: 18}}>Prioritet</label>
-          <div style={styles.roleGroup}>
-            {[{v:'low',l:'Lav'},{v:'normal',l:'Normal'},{v:'high',l:'Høj'}].map(p => (
-              <button key={p.v} onClick={() => setPriority(p.v)} style={priority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
-            ))}
+
+          <div style={styles.formRow}>
+            <div style={{flex: 1}}>
+              <label style={styles.label}>Prioritet</label>
+              <div style={styles.roleGroup}>
+                {[{v:'low',l:'Lav'},{v:'normal',l:'Normal'},{v:'high',l:'Høj'}].map(p => (
+                  <button key={p.v} onClick={() => setPriority(p.v)} style={priority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{flex: 1}}>
+              <label style={styles.label}>Deadline</label>
+              <input style={styles.input} type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} />
+            </div>
           </div>
           {supportsVisibility && (
             <>
@@ -1610,6 +1626,7 @@
       const [title, setTitle] = useState('');
       const [description, setDescription] = useState('');
       const [priority, setPriority] = useState('normal');
+      const [dueDate, setDueDate] = useState('');
       const [visibility, setVisibility] = useState('all');
       const [visibleTo, setVisibleTo] = useState([]);
 
@@ -1628,6 +1645,7 @@
           title: title.trim(),
           description: description.trim(),
           priority,
+          dueDate,
         };
         if (supportsVisibility) {
           data.visibility = visibility;
@@ -1644,11 +1662,20 @@
           <input style={styles.input} value={title} onChange={e => setTitle(e.target.value)} placeholder={`fx en opgave til ${dept.label.toLowerCase()}`} autoFocus />
           <label style={{...styles.label, marginTop: 18}}>Beskrivelse</label>
           <textarea style={styles.textarea} value={description} onChange={e => setDescription(e.target.value)} placeholder="Detaljer eller kontekst…" rows={4} />
-          <label style={{...styles.label, marginTop: 18}}>Prioritet</label>
-          <div style={styles.roleGroup}>
-            {[{v:'low',l:'Lav'},{v:'normal',l:'Normal'},{v:'high',l:'Høj'}].map(p => (
-              <button key={p.v} onClick={() => setPriority(p.v)} style={priority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
-            ))}
+
+          <div style={styles.formRow}>
+            <div style={{flex: 1}}>
+              <label style={styles.label}>Prioritet</label>
+              <div style={styles.roleGroup}>
+                {[{v:'low',l:'Lav'},{v:'normal',l:'Normal'},{v:'high',l:'Høj'}].map(p => (
+                  <button key={p.v} onClick={() => setPriority(p.v)} style={priority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{flex: 1}}>
+              <label style={styles.label}>Deadline</label>
+              <input style={styles.input} type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} />
+            </div>
           </div>
 
           {supportsVisibility && (
@@ -2280,6 +2307,7 @@
       receptionTaskMeta: { fontSize: 11, color: 'var(--ink-faint)', display: 'flex', gap: 6, marginTop: 4 },
       receptionTaskActions: { display: 'flex', gap: 4, flexShrink: 0 },
       inlinePriority: { color: 'var(--red)', marginRight: 6, fontSize: 14 },
+      deadlineTag: { color: 'var(--warm)', fontWeight: 500 },
       handoverInput: { background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 3, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 },
       handoverInputRow: { display: 'flex', alignItems: 'center', gap: 10 },
       urgentToggle: { display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12, color: 'var(--ink-soft)', cursor: 'pointer', userSelect: 'none' },
