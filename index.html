@@ -20,9 +20,12 @@
       --mono: 'JetBrains Mono', monospace;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--body); }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--body); -webkit-font-smoothing: antialiased; }
     button { font-family: inherit; cursor: pointer; }
-    input, textarea, select { font-family: inherit; }
+    input, textarea, select { font-family: inherit; font-size: 16px; }
+    @media (min-width: 768px) {
+      input, textarea, select { font-size: 14px; }
+    }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
@@ -43,7 +46,8 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
     import {
       getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-      onAuthStateChanged, signOut, updateProfile
+      onAuthStateChanged, signOut, updateProfile,
+      sendPasswordResetEmail, updatePassword, EmailAuthProvider, reauthenticateWithCredential
     } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
     import {
       getFirestore, collection, doc, setDoc, getDoc, getDocs, addDoc,
@@ -70,6 +74,7 @@
     window.firebaseFns = {
       signInWithEmailAndPassword, createUserWithEmailAndPassword,
       onAuthStateChanged, signOut, updateProfile,
+      sendPasswordResetEmail, updatePassword, EmailAuthProvider, reauthenticateWithCredential,
       collection, doc, setDoc, getDoc, getDocs, addDoc,
       updateDoc, deleteDoc, query, orderBy, onSnapshot, serverTimestamp, arrayUnion
     };
@@ -97,6 +102,15 @@
       const db = window.firebaseDb;
       const fns = window.firebaseFns;
 
+      const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+      const [sidebarOpen, setSidebarOpen] = useState(false);
+
+      useEffect(() => {
+        const onResize = () => setIsMobile(window.innerWidth < 768);
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+      }, []);
+
       const [authUser, setAuthUser] = useState(null);
       const [userProfile, setUserProfile] = useState(null);
       const [authLoading, setAuthLoading] = useState(true);
@@ -106,17 +120,27 @@
       const [tasks, setTasks] = useState([]);
       const [documents, setDocuments] = useState([]);
       const [comments, setComments] = useState({});
-      const [receptionTasks, setReceptionTasks] = useState([]);
-      const [handoverNotes, setHandoverNotes] = useState([]);
+      // Department data — keyed by department id ('reception', 'kontor', 'steril')
+      const [deptTasks, setDeptTasks] = useState({ reception: [], kontor: [], steril: [] });
+      const [deptNotes, setDeptNotes] = useState({ reception: [], kontor: [], steril: [] });
 
       const [view, setView] = useState('tasks');
       const [showNewTask, setShowNewTask] = useState(false);
       const [showNewDoc, setShowNewDoc] = useState(false);
-      const [showNewReceptionTask, setShowNewReceptionTask] = useState(false);
+      const [editDoc, setEditDoc] = useState(null);
+      const [showNewDeptTask, setShowNewDeptTask] = useState(null); // dept id when open
       const [showNewUser, setShowNewUser] = useState(false);
+      const [showChangePassword, setShowChangePassword] = useState(false);
       const [selectedTask, setSelectedTask] = useState(null);
       const [searchQuery, setSearchQuery] = useState('');
       const [filterStatus, setFilterStatus] = useState('all');
+
+      // Department definitions
+      const DEPARTMENTS = [
+        { id: 'reception', label: 'Reception', tasksCollection: 'platform_reception_tasks', notesCollection: 'platform_handover_notes' },
+        { id: 'kontor', label: 'Kontor', tasksCollection: 'platform_kontor_tasks', notesCollection: 'platform_kontor_notes' },
+        { id: 'steril', label: 'Steril', tasksCollection: 'platform_steril_tasks', notesCollection: 'platform_steril_notes' },
+      ];
 
       // Listen to auth state
       useEffect(() => {
@@ -182,17 +206,17 @@
           setComments(map);
         }));
 
-        // Reception tasks
-        unsubs.push(fns.onSnapshot(
-          fns.query(fns.collection(db, 'platform_reception_tasks'), fns.orderBy('createdAt', 'desc')),
-          (snap) => setReceptionTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-        ));
-
-        // Handover notes
-        unsubs.push(fns.onSnapshot(
-          fns.query(fns.collection(db, 'platform_handover_notes'), fns.orderBy('createdAt', 'desc')),
-          (snap) => setHandoverNotes(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-        ));
+        // Department tasks + notes — subscribe per department
+        DEPARTMENTS.forEach(dept => {
+          unsubs.push(fns.onSnapshot(
+            fns.query(fns.collection(db, dept.tasksCollection), fns.orderBy('createdAt', 'desc')),
+            (snap) => setDeptTasks(prev => ({ ...prev, [dept.id]: snap.docs.map(d => ({ id: d.id, ...d.data() })) }))
+          ));
+          unsubs.push(fns.onSnapshot(
+            fns.query(fns.collection(db, dept.notesCollection), fns.orderBy('createdAt', 'desc')),
+            (snap) => setDeptNotes(prev => ({ ...prev, [dept.id]: snap.docs.map(d => ({ id: d.id, ...d.data() })) }))
+          ));
+        });
 
         return () => unsubs.forEach(u => u());
       }, [userProfile?.id]);
@@ -260,6 +284,16 @@
         } catch (e) { alert('Fejl: ' + e.message); }
       };
 
+      const updateTask = async (id, data) => {
+        try {
+          await fns.updateDoc(fns.doc(db, 'platform_tasks', id), {
+            ...data,
+            updatedAt: new Date().toISOString(),
+            updatedBy: userProfile.name,
+          });
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
       const deleteTask = async (id) => {
         if (!confirm('Slet denne opgave?')) return;
         try {
@@ -306,37 +340,76 @@
         catch (e) { alert('Fejl: ' + e.message); }
       };
 
-      // ---- Reception handlers ----
-      const createReceptionTask = async (data) => {
+      const updateDocument = async (id, data) => {
         try {
-          await fns.addDoc(fns.collection(db, 'platform_reception_tasks'), {
+          await fns.updateDoc(fns.doc(db, 'platform_documents', id), {
+            ...data,
+            updatedAt: new Date().toISOString(),
+            updatedBy: userProfile.name,
+          });
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      // ---- Department handlers (generic for reception, kontor, steril) ----
+      const getDept = (deptId) => DEPARTMENTS.find(d => d.id === deptId);
+
+      const createDeptTask = async (deptId, data) => {
+        try {
+          const dept = getDept(deptId);
+          await fns.addDoc(fns.collection(db, dept.tasksCollection), {
             ...data, status: 'todo',
             createdBy: userProfile.id, createdByName: userProfile.name,
             createdAt: new Date().toISOString(),
           });
-          setShowNewReceptionTask(false);
+          setShowNewDeptTask(null);
         } catch (e) { alert('Fejl: ' + e.message); }
       };
 
-      const updateReceptionTaskStatus = async (id, status) => {
+      const updateDeptTaskStatus = async (deptId, id, status) => {
         try {
-          await fns.updateDoc(fns.doc(db, 'platform_reception_tasks', id), {
+          const dept = getDept(deptId);
+          await fns.updateDoc(fns.doc(db, dept.tasksCollection, id), {
             status, updatedAt: new Date().toISOString(),
           });
         } catch (e) { alert('Fejl: ' + e.message); }
       };
 
-      const deleteReceptionTask = async (id) => {
-        if (!confirm('Slet denne opgave?')) return;
-        try { await fns.deleteDoc(fns.doc(db, 'platform_reception_tasks', id)); }
-        catch (e) { alert('Fejl: ' + e.message); }
+      const updateDeptTask = async (deptId, id, data) => {
+        try {
+          const dept = getDept(deptId);
+          await fns.updateDoc(fns.doc(db, dept.tasksCollection, id), {
+            ...data,
+            updatedAt: new Date().toISOString(),
+            updatedBy: userProfile.name,
+          });
+        } catch (e) { alert('Fejl: ' + e.message); }
       };
 
-      const addHandoverNote = async (text, urgent) => {
+      const updateDeptNote = async (deptId, id, text, urgent) => {
+        try {
+          const dept = getDept(deptId);
+          await fns.updateDoc(fns.doc(db, dept.notesCollection, id), {
+            text: text.trim(), urgent: !!urgent,
+            updatedAt: new Date().toISOString(),
+            updatedBy: userProfile.name,
+          });
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      const deleteDeptTask = async (deptId, id) => {
+        if (!confirm('Slet denne opgave?')) return;
+        try {
+          const dept = getDept(deptId);
+          await fns.deleteDoc(fns.doc(db, dept.tasksCollection, id));
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      const addDeptNote = async (deptId, text, urgent) => {
         const trimmed = text.trim();
         if (!trimmed) return;
         try {
-          await fns.addDoc(fns.collection(db, 'platform_handover_notes'), {
+          const dept = getDept(deptId);
+          await fns.addDoc(fns.collection(db, dept.notesCollection), {
             text: trimmed, urgent: !!urgent,
             author: userProfile.name, authorId: userProfile.id,
             acknowledged: [],
@@ -345,9 +418,10 @@
         } catch (e) { alert('Fejl: ' + e.message); }
       };
 
-      const acknowledgeNote = async (id) => {
+      const acknowledgeDeptNote = async (deptId, id) => {
         try {
-          const ref = fns.doc(db, 'platform_handover_notes', id);
+          const dept = getDept(deptId);
+          const ref = fns.doc(db, dept.notesCollection, id);
           const snap = await fns.getDoc(ref);
           if (!snap.exists()) return;
           const acked = snap.data().acknowledged || [];
@@ -358,10 +432,12 @@
         } catch (e) { alert('Fejl: ' + e.message); }
       };
 
-      const deleteHandoverNote = async (id) => {
+      const deleteDeptNote = async (deptId, id) => {
         if (!confirm('Slet denne besked?')) return;
-        try { await fns.deleteDoc(fns.doc(db, 'platform_handover_notes', id)); }
-        catch (e) { alert('Fejl: ' + e.message); }
+        try {
+          const dept = getDept(deptId);
+          await fns.deleteDoc(fns.doc(db, dept.notesCollection, id));
+        } catch (e) { alert('Fejl: ' + e.message); }
       };
 
       // ---- Render ----
@@ -370,50 +446,110 @@
       if (!userProfile) return <LoadingScreen text="Indlæser profil…" />;
 
       const isAdmin = userProfile.role === 'leder';
-      const unreadUrgent = handoverNotes.filter(n =>
-        n.urgent && !(n.acknowledged || []).find(a => a.id === userProfile.id)
-      ).length;
+
+      // Compute badge counts for each department
+      const deptBadges = {};
+      DEPARTMENTS.forEach(dept => {
+        const openTasks = (deptTasks[dept.id] || []).filter(t => t.status !== 'done').length;
+        const unreadUrgent = (deptNotes[dept.id] || []).filter(n =>
+          n.urgent && !(n.acknowledged || []).find(a => a.id === userProfile.id)
+        ).length;
+        deptBadges[dept.id] = openTasks + unreadUrgent;
+      });
 
       return (
-        <div style={styles.app}>
-          <Sidebar
-            userProfile={userProfile}
-            view={view} setView={setView}
-            onLogout={handleLogout}
-            taskCount={tasks.filter(t => t.status !== 'done').length}
-            docCount={documents.length}
-            receptionCount={receptionTasks.filter(t => t.status !== 'done').length + unreadUrgent}
-            isAdmin={isAdmin}
-          />
-          <main style={styles.main}>
-            <Header view={view} userProfile={userProfile} />
-            {view === 'tasks' && <TasksView tasks={tasks} users={users} comments={comments}
+        <div style={isMobile ? styles.appMobile : styles.app}>
+          {isMobile && (
+            <div style={styles.mobileTopbar}>
+              <button onClick={() => setSidebarOpen(true)} style={styles.burgerBtn}>
+                <Icon name="menu" size={22} />
+              </button>
+              <div style={styles.mobileTopbarTitle}>
+                <span style={styles.mobileMark}>◐</span> Arbejdsplatform
+              </div>
+              <div style={styles.mobileTopbarAvatar}>{userProfile.name[0].toUpperCase()}</div>
+            </div>
+          )}
+
+          {isMobile && sidebarOpen && (
+            <div style={styles.mobileSidebarOverlay} onClick={() => setSidebarOpen(false)}>
+              <div style={styles.mobileSidebarPanel} onClick={(e) => e.stopPropagation()}>
+                <Sidebar
+                  userProfile={userProfile}
+                  view={view}
+                  setView={(v) => { setView(v); setSidebarOpen(false); }}
+                  onLogout={handleLogout}
+                  taskCount={tasks.filter(t => t.status !== 'done').length}
+                  docCount={documents.length}
+                  departments={DEPARTMENTS}
+                  deptBadges={deptBadges}
+                  isAdmin={isAdmin}
+                  onChangePassword={() => { setShowChangePassword(true); setSidebarOpen(false); }}
+                  isMobile={true}
+                />
+              </div>
+            </div>
+          )}
+
+          {!isMobile && (
+            <Sidebar
+              userProfile={userProfile}
+              view={view} setView={setView}
+              onLogout={handleLogout}
+              taskCount={tasks.filter(t => t.status !== 'done').length}
+              docCount={documents.length}
+              departments={DEPARTMENTS}
+              deptBadges={deptBadges}
+              isAdmin={isAdmin}
+              onChangePassword={() => setShowChangePassword(true)}
+            />
+          )}
+
+          <main style={isMobile ? styles.mainMobile : styles.main}>
+            <Header view={view} userProfile={userProfile} departments={DEPARTMENTS} isMobile={isMobile} />
+            {view === 'tasks' && <TasksView tasks={tasks} users={users} comments={comments} currentUserId={userProfile.id}
               onNew={() => setShowNewTask(true)} onSelect={setSelectedTask} onStatusChange={updateTaskStatus}
               searchQuery={searchQuery} setSearchQuery={setSearchQuery}
-              filterStatus={filterStatus} setFilterStatus={setFilterStatus} />}
+              filterStatus={filterStatus} setFilterStatus={setFilterStatus} isMobile={isMobile} />}
             {view === 'documents' && <DocumentsView documents={documents} userProfile={userProfile}
-              onNew={() => setShowNewDoc(true)} onDelete={deleteDocument} />}
-            {view === 'reception' && <ReceptionView
-              receptionTasks={receptionTasks} handoverNotes={handoverNotes} userProfile={userProfile}
-              onNewTask={() => setShowNewReceptionTask(true)}
-              onTaskStatusChange={updateReceptionTaskStatus}
-              onTaskDelete={deleteReceptionTask}
-              onAddNote={addHandoverNote}
-              onAckNote={acknowledgeNote}
-              onDeleteNote={deleteHandoverNote} />}
-            {view === 'overview' && <OverviewView tasks={tasks} users={users} />}
+              onNew={() => setShowNewDoc(true)} onDelete={deleteDocument} onEdit={setEditDoc} />}
+            {DEPARTMENTS.map(dept => view === dept.id && (
+              <DepartmentView key={dept.id}
+                dept={dept}
+                tasks={deptTasks[dept.id] || []}
+                notes={deptNotes[dept.id] || []}
+                users={users}
+                userProfile={userProfile}
+                onNewTask={() => setShowNewDeptTask(dept.id)}
+                onTaskStatusChange={(id, status) => updateDeptTaskStatus(dept.id, id, status)}
+                onTaskDelete={(id) => deleteDeptTask(dept.id, id)}
+                onTaskEdit={(id, data) => updateDeptTask(dept.id, id, data)}
+                onAddNote={(text, urgent) => addDeptNote(dept.id, text, urgent)}
+                onUpdateNote={(id, text, urgent) => updateDeptNote(dept.id, id, text, urgent)}
+                onAckNote={(id) => acknowledgeDeptNote(dept.id, id)}
+                onDeleteNote={(id) => deleteDeptNote(dept.id, id)}
+                isMobile={isMobile} />
+            ))}
+            {view === 'overview' && <OverviewView tasks={tasks} users={users} isMobile={isMobile} />}
             {view === 'team' && <TeamView users={users} tasks={tasks} userProfile={userProfile}
               onNewUser={() => setShowNewUser(true)} onUpdateRole={updateUserRole} isAdmin={isAdmin} />}
           </main>
 
-          {showNewTask && <NewTaskModal users={users} onClose={() => setShowNewTask(false)} onCreate={createTask} />}
+          {showNewTask && <NewTaskModal users={users} currentUserId={userProfile.id} onClose={() => setShowNewTask(false)} onCreate={createTask} />}
           {showNewDoc && <NewDocModal onClose={() => setShowNewDoc(false)} onCreate={createDocument} />}
-          {showNewReceptionTask && <NewReceptionTaskModal onClose={() => setShowNewReceptionTask(false)} onCreate={createReceptionTask} />}
+          {editDoc && <EditDocModal doc={editDoc} onClose={() => setEditDoc(null)} onSave={(data) => { updateDocument(editDoc.id, data); setEditDoc(null); }} />}
+          {showNewDeptTask && <NewDeptTaskModal
+            dept={DEPARTMENTS.find(d => d.id === showNewDeptTask)}
+            users={users}
+            currentUserId={userProfile.id}
+            onClose={() => setShowNewDeptTask(null)}
+            onCreate={(data) => createDeptTask(showNewDeptTask, data)} />}
           {showNewUser && <NewUserModal onClose={() => setShowNewUser(false)} onCreate={createNewUser} />}
+          {showChangePassword && <ChangePasswordModal authUser={authUser} onClose={() => setShowChangePassword(false)} />}
           {selectedTask && <TaskDetailModal task={tasks.find(t => t.id === selectedTask)} users={users}
             userProfile={userProfile} comments={comments[selectedTask] || []}
             onClose={() => setSelectedTask(null)} onStatusChange={updateTaskStatus}
-            onAddComment={addComment} onDelete={deleteTask} />}
+            onAddComment={addComment} onDelete={deleteTask} onUpdate={updateTask} />}
         </div>
       );
     }
@@ -429,6 +565,8 @@
         'auth/email-already-in-use': 'E-mailen er allerede i brug',
         'auth/weak-password': 'Adgangskoden skal være mindst 6 tegn',
         'auth/network-request-failed': 'Kunne ikke nå serveren',
+        'auth/requires-recent-login': 'Du skal logge ud og ind igen før du kan skifte adgangskode',
+        'auth/missing-email': 'Indtast en e-mail',
       };
       return map[code] || 'Login fejlede';
     }
@@ -450,11 +588,31 @@
       const [email, setEmail] = useState('');
       const [password, setPassword] = useState('');
       const [submitting, setSubmitting] = useState(false);
+      const [mode, setMode] = useState('login'); // 'login' or 'reset'
+      const [resetMessage, setResetMessage] = useState('');
+      const [resetError, setResetError] = useState('');
 
       const submit = async () => {
         if (!email.trim() || !password) return;
         setSubmitting(true);
         await onLogin(email.trim(), password);
+        setSubmitting(false);
+      };
+
+      const sendReset = async () => {
+        if (!email.trim()) {
+          setResetError('Indtast din e-mail først');
+          return;
+        }
+        setSubmitting(true);
+        setResetError('');
+        setResetMessage('');
+        try {
+          await window.firebaseFns.sendPasswordResetEmail(window.firebaseAuth, email.trim());
+          setResetMessage(`En e-mail er sendt til ${email.trim()} med et link til at nulstille adgangskoden. Tjek også din spam-mappe.`);
+        } catch (e) {
+          setResetError(translateAuthError(e.code) || 'Kunne ikke sende e-mail');
+        }
         setSubmitting(false);
       };
 
@@ -466,7 +624,7 @@
               <div style={styles.loginMark}>◐</div>
               <div>
                 <div style={styles.loginTitle}>Arbejdsplatform</div>
-                <div style={styles.loginSubtitle}>Opgaver · Retningslinjer · Reception</div>
+                <div style={styles.loginSubtitle}>{mode === 'reset' ? 'Nulstil adgangskode' : 'Opgaver · Retningslinjer · Reception'}</div>
               </div>
             </div>
             <div style={styles.loginDivider}></div>
@@ -475,101 +633,176 @@
             <input style={styles.input} type="email" value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="dit.navn@firma.dk"
-              onKeyDown={(e) => e.key === 'Enter' && document.getElementById('pwd').focus()}
+              onKeyDown={(e) => e.key === 'Enter' && (mode === 'login' ? document.getElementById('pwd')?.focus() : sendReset())}
               autoFocus />
 
-            <label style={{...styles.label, marginTop: 18}}>Adgangskode</label>
-            <input id="pwd" style={styles.input} type="password" value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              onKeyDown={(e) => e.key === 'Enter' && submit()} />
+            {mode === 'login' && (
+              <>
+                <label style={{...styles.label, marginTop: 18}}>Adgangskode</label>
+                <input id="pwd" style={styles.input} type="password" value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  onKeyDown={(e) => e.key === 'Enter' && submit()} />
+              </>
+            )}
 
-            {error && <div style={styles.errorBox}>{error}</div>}
+            {error && mode === 'login' && <div style={styles.errorBox}>{error}</div>}
+            {resetError && <div style={styles.errorBox}>{resetError}</div>}
+            {resetMessage && <div style={styles.successBox}>{resetMessage}</div>}
 
-            <button style={{...styles.primaryBtn, marginTop: 24, width: '100%', justifyContent: 'center'}}
-              onClick={submit} disabled={!email.trim() || !password || submitting}>
-              {submitting ? 'Logger ind…' : 'Log ind →'}
-            </button>
+            {mode === 'login' ? (
+              <>
+                <button style={{...styles.primaryBtn, marginTop: 24, width: '100%', justifyContent: 'center'}}
+                  onClick={submit} disabled={!email.trim() || !password || submitting}>
+                  {submitting ? 'Logger ind…' : 'Log ind →'}
+                </button>
+                <button onClick={() => { setMode('reset'); setResetMessage(''); setResetError(''); }} style={styles.linkBtn}>
+                  Glemt adgangskode?
+                </button>
+              </>
+            ) : (
+              <>
+                <button style={{...styles.primaryBtn, marginTop: 24, width: '100%', justifyContent: 'center'}}
+                  onClick={sendReset} disabled={!email.trim() || submitting}>
+                  {submitting ? 'Sender…' : 'Send nulstillings-link'}
+                </button>
+                <button onClick={() => { setMode('login'); setResetMessage(''); setResetError(''); }} style={styles.linkBtn}>
+                  ← Tilbage til login
+                </button>
+              </>
+            )}
 
             <div style={styles.loginFoot}>
-              Brug samme login som ferie-systemet.
+              {mode === 'login' ? 'Brug samme login som ferie-systemet.' : 'Du modtager en e-mail med et link til at vælge ny adgangskode.'}
             </div>
           </div>
         </div>
       );
     }
 
-    function Sidebar({ userProfile, view, setView, onLogout, taskCount, docCount, receptionCount, isAdmin }) {
-      const items = [
+    function Sidebar({ userProfile, view, setView, onLogout, taskCount, docCount, departments, deptBadges, isAdmin, onChangePassword, isMobile }) {
+      const [menuOpen, setMenuOpen] = useState(false);
+      const topItems = [
         { id: 'tasks', label: 'Opgaver', icon: 'check', badge: taskCount },
         { id: 'documents', label: 'Dokumenter', icon: 'file', badge: docCount },
-        { id: 'reception', label: 'Reception', icon: 'bell', badge: receptionCount, divider: true },
+      ];
+      const deptIcons = { reception: 'bell', kontor: 'briefcase', steril: 'shield' };
+      const bottomItems = [
         { id: 'overview', label: 'Overblik', icon: 'chart' },
         { id: 'team', label: 'Team', icon: 'users' },
       ];
 
       return (
-        <aside style={styles.sidebar}>
+        <aside style={isMobile ? styles.sidebarMobile : styles.sidebar}>
           <div style={styles.sidebarBrand}>
             <div style={styles.sidebarMark}>◐</div>
             <div style={styles.sidebarBrandText}>Arbejdsplatform</div>
           </div>
           <nav style={styles.nav}>
-            {items.map(item => {
+            {topItems.map(item => {
               const active = view === item.id;
               return (
-                <Fragment key={item.id}>
-                  {item.divider && <div style={styles.navDivider}>Afdeling</div>}
-                  <button onClick={() => setView(item.id)}
-                    style={active ? styles.navItemActive : styles.navItem}>
-                    <Icon name={item.icon} size={17} />
-                    <span>{item.label}</span>
-                    {item.badge > 0 && <span style={active ? styles.navBadgeActive : styles.navBadge}>{item.badge}</span>}
-                  </button>
-                </Fragment>
+                <button key={item.id} onClick={() => setView(item.id)}
+                  style={active ? styles.navItemActive : styles.navItem}>
+                  <Icon name={item.icon} size={17} />
+                  <span>{item.label}</span>
+                  {item.badge > 0 && <span style={active ? styles.navBadgeActive : styles.navBadge}>{item.badge}</span>}
+                </button>
+              );
+            })}
+
+            <div style={styles.navDivider}>Afdelinger</div>
+            {departments.map(dept => {
+              const active = view === dept.id;
+              const badge = deptBadges[dept.id] || 0;
+              return (
+                <button key={dept.id} onClick={() => setView(dept.id)}
+                  style={active ? styles.navItemActive : styles.navItem}>
+                  <Icon name={deptIcons[dept.id] || 'circle'} size={17} />
+                  <span>{dept.label}</span>
+                  {badge > 0 && <span style={active ? styles.navBadgeActive : styles.navBadge}>{badge}</span>}
+                </button>
+              );
+            })}
+
+            <div style={styles.navDivider}>Administration</div>
+            {bottomItems.map(item => {
+              const active = view === item.id;
+              return (
+                <button key={item.id} onClick={() => setView(item.id)}
+                  style={active ? styles.navItemActive : styles.navItem}>
+                  <Icon name={item.icon} size={17} />
+                  <span>{item.label}</span>
+                </button>
               );
             })}
           </nav>
           <div style={styles.sidebarFoot}>
-            <div style={styles.userChip}>
+            {menuOpen && (
+              <div style={styles.userMenu}>
+                <button style={styles.userMenuItem} onClick={() => { setMenuOpen(false); onChangePassword(); }}>
+                  <Icon name="lock" size={14} /> Skift adgangskode
+                </button>
+                <button style={styles.userMenuItem} onClick={() => { setMenuOpen(false); onLogout(); }}>
+                  <Icon name="logout" size={14} /> Log ud
+                </button>
+              </div>
+            )}
+            <button style={styles.userChip} onClick={() => setMenuOpen(!menuOpen)}>
               <div style={styles.userAvatar}>{userProfile.name[0].toUpperCase()}</div>
-              <div style={{flex: 1, minWidth: 0}}>
+              <div style={{flex: 1, minWidth: 0, textAlign: 'left'}}>
                 <div style={styles.userName}>{userProfile.name}</div>
                 <div style={styles.userRole}>{isAdmin ? 'Admin' : 'Medarbejder'}</div>
               </div>
-              <button onClick={onLogout} style={styles.iconBtn} title="Log ud">
-                <Icon name="logout" size={15} />
-              </button>
-            </div>
+              <Icon name={menuOpen ? 'chevron-down' : 'chevron-up'} size={14} color="var(--ink-faint)" />
+            </button>
           </div>
         </aside>
       );
     }
 
-    function Header({ view, userProfile }) {
+    function Header({ view, userProfile, departments, isMobile }) {
       const titles = {
         tasks: { h: 'Opgaver', s: 'Opret, tildel og følg op på opgaver i teamet.' },
         documents: { h: 'Dokumenter', s: 'Retningslinjer, uddelegeringer og delte filer.' },
-        reception: { h: 'Reception', s: 'Receptionens egne opgaver og overlevering mellem vagter.' },
         overview: { h: 'Overblik', s: 'Status og fremdrift på tværs af teamet.' },
         team: { h: 'Team', s: 'Alle på platformen og deres aktivitet.' },
       };
-      const t = titles[view];
+      (departments || []).forEach(dept => {
+        titles[dept.id] = { h: dept.label, s: `${dept.label}-afdelingens egne opgaver og overlevering mellem vagter.` };
+      });
+      const t = titles[view] || { h: '', s: '' };
       const hour = new Date().getHours();
       const greeting = hour < 10 ? 'Godmorgen' : hour < 18 ? 'Hej' : 'Godaften';
       return (
-        <header style={styles.header}>
+        <header style={isMobile ? styles.headerMobile : styles.header}>
           <div>
             <div style={styles.headerEyebrow}>{greeting}, {userProfile.name.split(' ')[0]}</div>
-            <h1 style={styles.headerTitle}>{t.h}</h1>
+            <h1 style={isMobile ? styles.headerTitleMobile : styles.headerTitle}>{t.h}</h1>
             <div style={styles.headerSub}>{t.s}</div>
           </div>
         </header>
       );
     }
 
-    function TasksView({ tasks, users, comments, onNew, onSelect, onStatusChange, searchQuery, setSearchQuery, filterStatus, setFilterStatus }) {
-      const filtered = tasks.filter(t => {
+    function TasksView({ tasks, users, comments, currentUserId, onNew, onSelect, onStatusChange, searchQuery, setSearchQuery, filterStatus, setFilterStatus, isMobile }) {
+      // Filter tasks based on visibility
+      const visibleTasks = tasks.filter(t => {
+        // Default to 'all' for tasks created before visibility feature existed
+        const visibility = t.visibility || 'all';
+        if (visibility === 'all') return true;
+        if (visibility === 'private') return t.createdBy === currentUserId;
+        if (visibility === 'specific') {
+          // Visible to creator, assignee, and people in visibleTo list
+          if (t.createdBy === currentUserId) return true;
+          if (t.assigneeId === currentUserId) return true;
+          if ((t.visibleTo || []).includes(currentUserId)) return true;
+          return false;
+        }
+        return true;
+      });
+
+      const filtered = visibleTasks.filter(t => {
         if (filterStatus !== 'all' && t.status !== filterStatus) return false;
         if (searchQuery) {
           const q = searchQuery.toLowerCase();
@@ -609,7 +842,7 @@
               body="Opret den første opgave for teamet — den bliver synlig for alle."
               actionLabel="Opret opgave" onAction={onNew} />
           ) : (
-            <div style={styles.kanban}>
+            <div style={isMobile ? styles.kanbanMobile : styles.kanban}>
               {columns.map(col => {
                 const colTasks = filtered.filter(t => t.status === col.id);
                 return (
@@ -630,7 +863,11 @@
                                 <Icon name="alert" size={12} /> Høj prioritet
                               </div>
                             )}
-                            <div style={styles.taskTitle}>{task.title}</div>
+                            <div style={styles.taskTitle}>
+                              {task.visibility === 'private' && <span title="Privat - kun dig" style={styles.visIcon}><Icon name="lock" size={11} /></span>}
+                              {task.visibility === 'specific' && <span title="Specifikke personer" style={styles.visIcon}><Icon name="users" size={11} /></span>}
+                              {task.title}
+                            </div>
                             {task.description && (
                               <div style={styles.taskDesc}>
                                 {task.description.length > 90 ? task.description.slice(0, 90) + '…' : task.description}
@@ -673,7 +910,7 @@
       );
     }
 
-    function DocumentsView({ documents, userProfile, onNew, onDelete }) {
+    function DocumentsView({ documents, userProfile, onNew, onDelete, onEdit }) {
       const [filter, setFilter] = useState('all');
       const categories = ['all', 'retningslinje', 'uddelegering', 'procedure', 'andet'];
       const filtered = filter === 'all' ? documents : documents.filter(d => d.category === filter);
@@ -701,33 +938,63 @@
               actionLabel="Tilføj dokument" onAction={onNew} />
           ) : (
             <div style={styles.docGrid}>
-              {filtered.map(doc => (
-                <div key={doc.id} style={styles.docCard}>
-                  <div style={styles.docCategory}>{doc.category}</div>
-                  <div style={styles.docTitle}>{doc.title}</div>
-                  {doc.description && <div style={styles.docDesc}>{doc.description}</div>}
-                  <div style={styles.docContent}>{doc.content}</div>
-                  <div style={styles.docFoot}>
-                    <span>Af {doc.uploadedBy}</span>
-                    <span>·</span>
-                    <span>{new Date(doc.createdAt).toLocaleDateString('da-DK', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                    {(userProfile.role === 'leder' || doc.uploadedById === userProfile.id) && (
-                      <button onClick={() => onDelete(doc.id)} style={styles.docDelete}>
-                        <Icon name="trash" size={13} />
-                      </button>
-                    )}
+              {filtered.map(doc => {
+                const canEdit = userProfile.role === 'leder' || doc.uploadedById === userProfile.id;
+                return (
+                  <div key={doc.id} style={styles.docCard}>
+                    <div style={styles.docCategory}>{doc.category}</div>
+                    <div style={styles.docTitle}>{doc.title}</div>
+                    {doc.description && <div style={styles.docDesc}>{doc.description}</div>}
+                    <div style={styles.docContent}>{doc.content}</div>
+                    <div style={styles.docFoot}>
+                      <span>Af {doc.uploadedBy}</span>
+                      <span>·</span>
+                      <span>{new Date(doc.createdAt).toLocaleDateString('da-DK', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                      {doc.updatedAt && (
+                        <>
+                          <span>·</span>
+                          <span style={{fontStyle: 'italic'}}>opdateret {new Date(doc.updatedAt).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' })}</span>
+                        </>
+                      )}
+                      <div style={{flex: 1}}></div>
+                      {canEdit && (
+                        <>
+                          <button onClick={() => onEdit(doc)} style={styles.docAction} title="Rediger">
+                            <Icon name="edit" size={13} />
+                          </button>
+                          <button onClick={() => onDelete(doc.id)} style={styles.docAction} title="Slet">
+                            <Icon name="trash" size={13} />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
       );
     }
 
-    function ReceptionView({ receptionTasks, handoverNotes, userProfile, onNewTask, onTaskStatusChange, onTaskDelete, onAddNote, onAckNote, onDeleteNote }) {
+    function DepartmentView({ dept, tasks, notes, users, userProfile, onNewTask, onTaskStatusChange, onTaskDelete, onTaskEdit, onAddNote, onUpdateNote, onAckNote, onDeleteNote, isMobile }) {
       const [noteText, setNoteText] = useState('');
       const [urgent, setUrgent] = useState(false);
+      const [editingNoteId, setEditingNoteId] = useState(null);
+      const [editTask, setEditTask] = useState(null);
+
+      // Apply visibility filtering (currently only Kontor uses this)
+      const visibleTasks = tasks.filter(t => {
+        const visibility = t.visibility || 'all';
+        if (visibility === 'all') return true;
+        if (visibility === 'private') return t.createdBy === userProfile.id;
+        if (visibility === 'specific') {
+          if (t.createdBy === userProfile.id) return true;
+          if ((t.visibleTo || []).includes(userProfile.id)) return true;
+          return false;
+        }
+        return true;
+      });
 
       const submitNote = () => {
         if (!noteText.trim()) return;
@@ -737,12 +1004,12 @@
       };
 
       const groupedTasks = {
-        todo: receptionTasks.filter(t => t.status === 'todo'),
-        in_progress: receptionTasks.filter(t => t.status === 'in_progress'),
-        done: receptionTasks.filter(t => t.status === 'done'),
+        todo: visibleTasks.filter(t => t.status === 'todo'),
+        in_progress: visibleTasks.filter(t => t.status === 'in_progress'),
+        done: visibleTasks.filter(t => t.status === 'done'),
       };
 
-      const notesByDate = handoverNotes.reduce((acc, n) => {
+      const notesByDate = notes.reduce((acc, n) => {
         const d = new Date(n.createdAt);
         const today = new Date();
         const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
@@ -757,23 +1024,23 @@
 
       return (
         <div style={styles.viewBody}>
-          <div style={styles.receptionGrid}>
+          <div style={isMobile ? styles.receptionGridMobile : styles.receptionGrid}>
             <div style={styles.receptionCol}>
               <div style={styles.receptionSectionHead}>
                 <div>
                   <div style={styles.receptionSectionEyebrow}>Sektion 01</div>
-                  <div style={styles.receptionSectionTitle}>Receptionens opgaver</div>
+                  <div style={styles.receptionSectionTitle}>{dept.label} — opgaver</div>
                 </div>
                 <button style={styles.primaryBtn} onClick={onNewTask}>
                   <Icon name="plus" size={15} /> Ny opgave
                 </button>
               </div>
 
-              {receptionTasks.length === 0 ? (
+              {visibleTasks.length === 0 ? (
                 <div style={styles.receptionEmpty}>
                   <Icon name="bell" size={26} color="var(--ink-faint)" />
-                  <div style={{...styles.emptyTitle, marginTop: 10}}>Ingen opgaver i receptionen</div>
-                  <div style={styles.emptyBody}>Opgaver oprettet her er kun synlige i Reception-fanen.</div>
+                  <div style={{...styles.emptyTitle, marginTop: 10}}>Ingen opgaver i {dept.label.toLowerCase()}</div>
+                  <div style={styles.emptyBody}>Opgaver oprettet her er kun synlige i {dept.label}-fanen.</div>
                 </div>
               ) : (
                 <div style={styles.receptionTaskList}>
@@ -789,6 +1056,8 @@
                             <div style={styles.receptionTaskMain}>
                               <div style={{...styles.taskTitle, textDecoration: status === 'done' ? 'line-through' : 'none', opacity: status === 'done' ? 0.5 : 1}}>
                                 {task.priority === 'high' && <span style={styles.inlinePriority}>●</span>}
+                                {task.visibility === 'private' && <span title="Privat - kun dig" style={styles.visIcon}><Icon name="lock" size={11} /></span>}
+                                {task.visibility === 'specific' && <span title="Specifikke personer" style={styles.visIcon}><Icon name="users" size={11} /></span>}
                                 {task.title}
                               </div>
                               {task.description && <div style={styles.taskDesc}>{task.description}</div>}
@@ -796,6 +1065,7 @@
                                 <span>Af {task.createdByName}</span>
                                 <span>·</span>
                                 <span>{new Date(task.createdAt).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' })}</span>
+                                {task.updatedAt && <span style={{fontStyle: 'italic'}}>· redigeret</span>}
                               </div>
                             </div>
                             <div style={styles.receptionTaskActions}>
@@ -803,7 +1073,10 @@
                               {status !== 'in_progress' && <button onClick={() => onTaskStatusChange(task.id, 'in_progress')} style={styles.miniBtn} title="I gang"><Icon name="clock" size={13} /></button>}
                               {status !== 'done' && <button onClick={() => onTaskStatusChange(task.id, 'done')} style={styles.miniBtn} title="Færdig"><Icon name="check-circle" size={13} /></button>}
                               {(userProfile.role === 'leder' || task.createdBy === userProfile.id) && (
-                                <button onClick={() => onTaskDelete(task.id)} style={{...styles.miniBtn, color: 'var(--red)'}} title="Slet"><Icon name="trash" size={13} /></button>
+                                <>
+                                  <button onClick={() => setEditTask(task)} style={styles.miniBtn} title="Rediger"><Icon name="edit" size={13} /></button>
+                                  <button onClick={() => onTaskDelete(task.id)} style={{...styles.miniBtn, color: 'var(--red)'}} title="Slet"><Icon name="trash" size={13} /></button>
+                                </>
                               )}
                             </div>
                           </div>
@@ -826,7 +1099,7 @@
               <div style={styles.handoverInput}>
                 <textarea style={{...styles.textarea, minHeight: 70}} value={noteText}
                   onChange={(e) => setNoteText(e.target.value)}
-                  placeholder="Skriv en besked til næste vagt — fx 'Pakke til Sofie ligger bag skranken' eller 'Telefon B er stadig på loud'…"
+                  placeholder={`Skriv en besked til næste vagt i ${dept.label.toLowerCase()}…`}
                   rows={3} />
                 <div style={styles.handoverInputRow}>
                   <label style={styles.urgentToggle}>
@@ -841,51 +1114,68 @@
               </div>
 
               <div style={styles.handoverFeed}>
-                {handoverNotes.length === 0 ? (
+                {notes.length === 0 ? (
                   <div style={styles.receptionEmpty}>
                     <Icon name="message" size={26} color="var(--ink-faint)" />
                     <div style={{...styles.emptyTitle, marginTop: 10}}>Ingen overleveringer endnu</div>
                     <div style={styles.emptyBody}>Skriv den første besked til kollegerne på næste vagt.</div>
                   </div>
                 ) : (
-                  Object.entries(notesByDate).map(([date, notes]) => (
+                  Object.entries(notesByDate).map(([date, dateNotes]) => (
                     <div key={date} style={styles.handoverDateGroup}>
                       <div style={styles.handoverDateLabel}>{date}</div>
-                      {notes.map(n => {
+                      {dateNotes.map(n => {
                         const acked = (n.acknowledged || []);
                         const iAcked = acked.find(a => a.id === userProfile.id);
                         const isMine = n.authorId === userProfile.id;
+                        const isEditing = editingNoteId === n.id;
                         return (
                           <div key={n.id} style={n.urgent ? styles.handoverNoteUrgent : styles.handoverNote}>
-                            {n.urgent && (
+                            {n.urgent && !isEditing && (
                               <div style={styles.handoverUrgentTag}>
                                 <Icon name="bell" size={11} /> Vigtig
                               </div>
                             )}
-                            <div style={styles.handoverNoteText}>{n.text}</div>
-                            <div style={styles.handoverNoteFoot}>
-                              <div style={styles.handoverAvatar}>{n.author[0].toUpperCase()}</div>
-                              <div>
-                                <div style={styles.handoverAuthor}>{n.author}{isMine && <span style={{color: 'var(--ink-faint)', fontWeight: 400}}> (dig)</span>}</div>
-                                <div style={styles.handoverTime}>{new Date(n.createdAt).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })}</div>
-                              </div>
-                              <div style={{flex: 1}}></div>
-                              {!iAcked && !isMine && (
-                                <button onClick={() => onAckNote(n.id)} style={styles.ackBtn}>
-                                  <Icon name="check-circle" size={12} /> Set
-                                </button>
-                              )}
-                              {iAcked && (
-                                <span style={styles.ackedTag}><Icon name="check-circle" size={11} /> Du har set</span>
-                              )}
-                              {(userProfile.role === 'leder' || isMine) && (
-                                <button onClick={() => onDeleteNote(n.id)} style={styles.iconBtn} title="Slet">
-                                  <Icon name="trash" size={13} />
-                                </button>
-                              )}
-                            </div>
-                            {acked.length > 0 && (
-                              <div style={styles.ackList}>Set af: {acked.map(a => a.name).join(', ')}</div>
+                            {isEditing ? (
+                              <NoteEditor note={n}
+                                onSave={(text, urgent) => { onUpdateNote(n.id, text, urgent); setEditingNoteId(null); }}
+                                onCancel={() => setEditingNoteId(null)} />
+                            ) : (
+                              <>
+                                <div style={styles.handoverNoteText}>{n.text}</div>
+                                <div style={styles.handoverNoteFoot}>
+                                  <div style={styles.handoverAvatar}>{n.author[0].toUpperCase()}</div>
+                                  <div>
+                                    <div style={styles.handoverAuthor}>{n.author}{isMine && <span style={{color: 'var(--ink-faint)', fontWeight: 400}}> (dig)</span>}</div>
+                                    <div style={styles.handoverTime}>
+                                      {new Date(n.createdAt).toLocaleTimeString('da-DK', { hour: '2-digit', minute: '2-digit' })}
+                                      {n.updatedAt && <span style={{fontStyle: 'italic'}}> · redigeret</span>}
+                                    </div>
+                                  </div>
+                                  <div style={{flex: 1}}></div>
+                                  {!iAcked && !isMine && (
+                                    <button onClick={() => onAckNote(n.id)} style={styles.ackBtn}>
+                                      <Icon name="check-circle" size={12} /> Set
+                                    </button>
+                                  )}
+                                  {iAcked && (
+                                    <span style={styles.ackedTag}><Icon name="check-circle" size={11} /> Du har set</span>
+                                  )}
+                                  {(userProfile.role === 'leder' || isMine) && (
+                                    <>
+                                      <button onClick={() => setEditingNoteId(n.id)} style={styles.iconBtn} title="Rediger">
+                                        <Icon name="edit" size={13} />
+                                      </button>
+                                      <button onClick={() => onDeleteNote(n.id)} style={styles.iconBtn} title="Slet">
+                                        <Icon name="trash" size={13} />
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                                {acked.length > 0 && (
+                                  <div style={styles.ackList}>Set af: {acked.map(a => a.name).join(', ')}</div>
+                                )}
+                              </>
                             )}
                           </div>
                         );
@@ -896,11 +1186,112 @@
               </div>
             </div>
           </div>
+          {editTask && <EditDeptTaskModal
+            dept={dept}
+            task={editTask}
+            users={users || []}
+            currentUserId={userProfile.id}
+            onClose={() => setEditTask(null)}
+            onSave={(data) => { onTaskEdit(editTask.id, data); setEditTask(null); }} />}
         </div>
       );
     }
 
-    function OverviewView({ tasks, users }) {
+    function NoteEditor({ note, onSave, onCancel }) {
+      const [text, setText] = useState(note.text || '');
+      const [urgent, setUrgent] = useState(!!note.urgent);
+      return (
+        <div style={{display: 'flex', flexDirection: 'column', gap: 8}}>
+          <textarea style={{...styles.textarea, minHeight: 60}} value={text}
+            onChange={(e) => setText(e.target.value)} rows={3} autoFocus />
+          <div style={{display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap'}}>
+            <label style={styles.urgentToggle}>
+              <input type="checkbox" checked={urgent} onChange={(e) => setUrgent(e.target.checked)} />
+              <Icon name="bell" size={13} /> Vigtig
+            </label>
+            <div style={{flex: 1}}></div>
+            <button onClick={onCancel} style={styles.ghostBtn}>Annullér</button>
+            <button onClick={() => onSave(text, urgent)} style={styles.primaryBtn} disabled={!text.trim()}>Gem</button>
+          </div>
+        </div>
+      );
+    }
+
+    function EditDeptTaskModal({ dept, task, users, currentUserId, onClose, onSave }) {
+      const supportsVisibility = dept.id === 'kontor';
+      const [title, setTitle] = useState(task.title || '');
+      const [description, setDescription] = useState(task.description || '');
+      const [priority, setPriority] = useState(task.priority || 'normal');
+      const [visibility, setVisibility] = useState(task.visibility || 'all');
+      const [visibleTo, setVisibleTo] = useState(task.visibleTo || []);
+
+      const toggleVisibleTo = (userId) => {
+        setVisibleTo(prev => prev.includes(userId)
+          ? prev.filter(id => id !== userId)
+          : [...prev, userId]);
+      };
+
+      const submit = () => {
+        if (!title.trim()) return;
+        const data = { title: title.trim(), description: description.trim(), priority };
+        if (supportsVisibility) {
+          data.visibility = visibility;
+          data.visibleTo = visibility === 'specific' ? visibleTo : [];
+        }
+        onSave(data);
+      };
+
+      const selectableUsers = users.filter(u => u.id !== currentUserId);
+
+      return (
+        <Modal onClose={onClose} title={`Rediger opgave i ${dept.label}`}>
+          <label style={styles.label}>Titel *</label>
+          <input style={styles.input} value={title} onChange={e => setTitle(e.target.value)} autoFocus />
+          <label style={{...styles.label, marginTop: 18}}>Beskrivelse</label>
+          <textarea style={styles.textarea} value={description} onChange={e => setDescription(e.target.value)} rows={4} />
+          <label style={{...styles.label, marginTop: 18}}>Prioritet</label>
+          <div style={styles.roleGroup}>
+            {[{v:'low',l:'Lav'},{v:'normal',l:'Normal'},{v:'high',l:'Høj'}].map(p => (
+              <button key={p.v} onClick={() => setPriority(p.v)} style={priority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
+            ))}
+          </div>
+          {supportsVisibility && (
+            <>
+              <label style={{...styles.label, marginTop: 18}}>Synlig for</label>
+              <div style={styles.roleGroup}>
+                <button onClick={() => setVisibility('all')} style={visibility === 'all' ? styles.roleBtnActive : styles.roleBtn}>🌍 Alle</button>
+                <button onClick={() => setVisibility('specific')} style={visibility === 'specific' ? styles.roleBtnActive : styles.roleBtn}>👥 Specifikke</button>
+                <button onClick={() => setVisibility('private')} style={visibility === 'private' ? styles.roleBtnActive : styles.roleBtn}>🔒 Kun mig</button>
+              </div>
+              {visibility === 'specific' && (
+                <div style={styles.specificPicker}>
+                  <div style={styles.specificList}>
+                    {selectableUsers.map(u => {
+                      const checked = visibleTo.includes(u.id);
+                      return (
+                        <label key={u.id} style={checked ? styles.specificItemActive : styles.specificItem}>
+                          <input type="checkbox" checked={checked} onChange={() => toggleVisibleTo(u.id)} />
+                          <div style={styles.specificAvatar}>{u.name[0].toUpperCase()}</div>
+                          <div style={{flex: 1}}>
+                            <div style={{fontSize: 13, fontWeight: 500}}>{u.name}</div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          <div style={styles.modalActions}>
+            <button onClick={onClose} style={styles.ghostBtn}>Annullér</button>
+            <button onClick={submit} style={styles.primaryBtn} disabled={!title.trim()}>Gem ændringer</button>
+          </div>
+        </Modal>
+      );
+    }
+
+    function OverviewView({ tasks, users, isMobile }) {
       const stats = {
         total: tasks.length,
         todo: tasks.filter(t => t.status === 'todo').length,
@@ -918,7 +1309,7 @@
 
       return (
         <div style={styles.viewBody}>
-          <div style={styles.statsRow}>
+          <div style={isMobile ? styles.statsRowMobile : styles.statsRow}>
             <StatCard label="Opgaver i alt" value={stats.total} />
             <StatCard label="At gøre" value={stats.todo} accent="warm" />
             <StatCard label="I gang" value={stats.inProgress} accent="ink" />
@@ -1034,17 +1425,35 @@
     // MODALS
     // ============================================================
 
-    function NewTaskModal({ users, onClose, onCreate }) {
+    function NewTaskModal({ users, currentUserId, onClose, onCreate }) {
       const [title, setTitle] = useState('');
       const [description, setDescription] = useState('');
       const [assigneeId, setAssigneeId] = useState('');
       const [priority, setPriority] = useState('normal');
       const [dueDate, setDueDate] = useState('');
+      const [visibility, setVisibility] = useState('all');
+      const [visibleTo, setVisibleTo] = useState([]);
+
+      const toggleVisibleTo = (userId) => {
+        setVisibleTo(prev => prev.includes(userId)
+          ? prev.filter(id => id !== userId)
+          : [...prev, userId]);
+      };
 
       const submit = () => {
         if (!title.trim()) return;
-        onCreate({ title: title.trim(), description: description.trim(), assigneeId, priority, dueDate });
+        const data = {
+          title: title.trim(),
+          description: description.trim(),
+          assigneeId, priority, dueDate,
+          visibility,
+          visibleTo: visibility === 'specific' ? visibleTo : [],
+        };
+        onCreate(data);
       };
+
+      // Filter out current user from "specific" selection (they always see their own)
+      const selectableUsers = users.filter(u => u.id !== currentUserId);
 
       return (
         <Modal onClose={onClose} title="Ny opgave">
@@ -1071,6 +1480,53 @@
               <button key={p.v} onClick={() => setPriority(p.v)} style={priority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
             ))}
           </div>
+
+          <label style={{...styles.label, marginTop: 18}}>Synlig for</label>
+          <div style={styles.roleGroup}>
+            <button onClick={() => setVisibility('all')} style={visibility === 'all' ? styles.roleBtnActive : styles.roleBtn}>
+              🌍 Alle
+            </button>
+            <button onClick={() => setVisibility('specific')} style={visibility === 'specific' ? styles.roleBtnActive : styles.roleBtn}>
+              👥 Specifikke personer
+            </button>
+            <button onClick={() => setVisibility('private')} style={visibility === 'private' ? styles.roleBtnActive : styles.roleBtn}>
+              🔒 Kun mig
+            </button>
+          </div>
+
+          {visibility === 'specific' && (
+            <div style={styles.specificPicker}>
+              <div style={styles.specificPickerHint}>
+                Vælg hvem der skal kunne se opgaven. Den person opgaven tildeles, kan altid se den.
+              </div>
+              <div style={styles.specificList}>
+                {selectableUsers.length === 0 ? (
+                  <div style={styles.empty}>Der er ikke andre brugere endnu.</div>
+                ) : (
+                  selectableUsers.map(u => {
+                    const checked = visibleTo.includes(u.id);
+                    return (
+                      <label key={u.id} style={checked ? styles.specificItemActive : styles.specificItem}>
+                        <input type="checkbox" checked={checked} onChange={() => toggleVisibleTo(u.id)} />
+                        <div style={styles.specificAvatar}>{u.name[0].toUpperCase()}</div>
+                        <div style={{flex: 1}}>
+                          <div style={{fontSize: 13, fontWeight: 500}}>{u.name}</div>
+                          <div style={{fontSize: 11, color: 'var(--ink-faint)'}}>{u.email}</div>
+                        </div>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
+
+          {visibility === 'private' && (
+            <div style={styles.visibilityHint}>
+              🔒 Denne opgave bliver kun synlig for dig — som en personlig huskeliste.
+            </div>
+          )}
+
           <div style={styles.modalActions}>
             <button onClick={onClose} style={styles.ghostBtn}>Annullér</button>
             <button onClick={submit} style={styles.primaryBtn} disabled={!title.trim()}>Opret opgave</button>
@@ -1114,18 +1570,78 @@
       );
     }
 
-    function NewReceptionTaskModal({ onClose, onCreate }) {
+    function EditDocModal({ doc, onClose, onSave }) {
+      const [title, setTitle] = useState(doc.title || '');
+      const [category, setCategory] = useState(doc.category || 'retningslinje');
+      const [description, setDescription] = useState(doc.description || '');
+      const [content, setContent] = useState(doc.content || '');
+
+      const submit = () => {
+        if (!title.trim() || !content.trim()) return;
+        onSave({ title: title.trim(), category, description: description.trim(), content: content.trim() });
+      };
+
+      return (
+        <Modal onClose={onClose} title="Rediger dokument" wide>
+          <label style={styles.label}>Titel *</label>
+          <input style={styles.input} value={title} onChange={e => setTitle(e.target.value)} autoFocus />
+          <label style={{...styles.label, marginTop: 18}}>Kategori</label>
+          <div style={styles.roleGroup}>
+            {['retningslinje', 'uddelegering', 'procedure', 'andet'].map(c => (
+              <button key={c} onClick={() => setCategory(c)} style={category === c ? styles.roleBtnActive : styles.roleBtn}>
+                {c.charAt(0).toUpperCase() + c.slice(1)}
+              </button>
+            ))}
+          </div>
+          <label style={{...styles.label, marginTop: 18}}>Kort beskrivelse</label>
+          <input style={styles.input} value={description} onChange={e => setDescription(e.target.value)} />
+          <label style={{...styles.label, marginTop: 18}}>Indhold *</label>
+          <textarea style={{...styles.textarea, minHeight: 240}} value={content} onChange={e => setContent(e.target.value)} rows={12} />
+          <div style={styles.helpText}>Sidst opdateret bliver automatisk noteret med dit navn.</div>
+          <div style={styles.modalActions}>
+            <button onClick={onClose} style={styles.ghostBtn}>Annullér</button>
+            <button onClick={submit} style={styles.primaryBtn} disabled={!title.trim() || !content.trim()}>Gem ændringer</button>
+          </div>
+        </Modal>
+      );
+    }
+
+    function NewDeptTaskModal({ dept, users, currentUserId, onClose, onCreate }) {
       const [title, setTitle] = useState('');
       const [description, setDescription] = useState('');
       const [priority, setPriority] = useState('normal');
+      const [visibility, setVisibility] = useState('all');
+      const [visibleTo, setVisibleTo] = useState([]);
+
+      // Only Kontor supports visibility for now
+      const supportsVisibility = dept.id === 'kontor';
+
+      const toggleVisibleTo = (userId) => {
+        setVisibleTo(prev => prev.includes(userId)
+          ? prev.filter(id => id !== userId)
+          : [...prev, userId]);
+      };
+
       const submit = () => {
         if (!title.trim()) return;
-        onCreate({ title: title.trim(), description: description.trim(), priority });
+        const data = {
+          title: title.trim(),
+          description: description.trim(),
+          priority,
+        };
+        if (supportsVisibility) {
+          data.visibility = visibility;
+          data.visibleTo = visibility === 'specific' ? visibleTo : [];
+        }
+        onCreate(data);
       };
+
+      const selectableUsers = (users || []).filter(u => u.id !== currentUserId);
+
       return (
-        <Modal onClose={onClose} title="Ny receptionsopgave">
+        <Modal onClose={onClose} title={`Ny opgave i ${dept.label}`}>
           <label style={styles.label}>Titel *</label>
-          <input style={styles.input} value={title} onChange={e => setTitle(e.target.value)} placeholder="fx Bestil nye visitkort" autoFocus />
+          <input style={styles.input} value={title} onChange={e => setTitle(e.target.value)} placeholder={`fx en opgave til ${dept.label.toLowerCase()}`} autoFocus />
           <label style={{...styles.label, marginTop: 18}}>Beskrivelse</label>
           <textarea style={styles.textarea} value={description} onChange={e => setDescription(e.target.value)} placeholder="Detaljer eller kontekst…" rows={4} />
           <label style={{...styles.label, marginTop: 18}}>Prioritet</label>
@@ -1134,10 +1650,134 @@
               <button key={p.v} onClick={() => setPriority(p.v)} style={priority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
             ))}
           </div>
+
+          {supportsVisibility && (
+            <>
+              <label style={{...styles.label, marginTop: 18}}>Synlig for</label>
+              <div style={styles.roleGroup}>
+                <button onClick={() => setVisibility('all')} style={visibility === 'all' ? styles.roleBtnActive : styles.roleBtn}>
+                  🌍 Alle
+                </button>
+                <button onClick={() => setVisibility('specific')} style={visibility === 'specific' ? styles.roleBtnActive : styles.roleBtn}>
+                  👥 Specifikke
+                </button>
+                <button onClick={() => setVisibility('private')} style={visibility === 'private' ? styles.roleBtnActive : styles.roleBtn}>
+                  🔒 Kun mig
+                </button>
+              </div>
+
+              {visibility === 'specific' && (
+                <div style={styles.specificPicker}>
+                  <div style={styles.specificPickerHint}>
+                    Vælg hvem der skal kunne se opgaven. Du kan selv altid se den.
+                  </div>
+                  <div style={styles.specificList}>
+                    {selectableUsers.length === 0 ? (
+                      <div style={styles.empty}>Der er ikke andre brugere endnu.</div>
+                    ) : (
+                      selectableUsers.map(u => {
+                        const checked = visibleTo.includes(u.id);
+                        return (
+                          <label key={u.id} style={checked ? styles.specificItemActive : styles.specificItem}>
+                            <input type="checkbox" checked={checked} onChange={() => toggleVisibleTo(u.id)} />
+                            <div style={styles.specificAvatar}>{u.name[0].toUpperCase()}</div>
+                            <div style={{flex: 1}}>
+                              <div style={{fontSize: 13, fontWeight: 500}}>{u.name}</div>
+                              <div style={{fontSize: 11, color: 'var(--ink-faint)'}}>{u.email}</div>
+                            </div>
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {visibility === 'private' && (
+                <div style={styles.visibilityHint}>
+                  🔒 Denne opgave bliver kun synlig for dig — som en personlig huskeliste.
+                </div>
+              )}
+            </>
+          )}
+
           <div style={styles.modalActions}>
             <button onClick={onClose} style={styles.ghostBtn}>Annullér</button>
             <button onClick={submit} style={styles.primaryBtn} disabled={!title.trim()}>Opret opgave</button>
           </div>
+        </Modal>
+      );
+    }
+
+    function ChangePasswordModal({ authUser, onClose }) {
+      const [currentPassword, setCurrentPassword] = useState('');
+      const [newPassword, setNewPassword] = useState('');
+      const [confirmPassword, setConfirmPassword] = useState('');
+      const [error, setError] = useState('');
+      const [success, setSuccess] = useState(false);
+      const [submitting, setSubmitting] = useState(false);
+
+      const submit = async () => {
+        setError('');
+        if (newPassword.length < 6) {
+          setError('Den nye adgangskode skal være mindst 6 tegn');
+          return;
+        }
+        if (newPassword !== confirmPassword) {
+          setError('De to nye adgangskoder er ikke ens');
+          return;
+        }
+        setSubmitting(true);
+        try {
+          // Reauthenticate first (Firebase requires this for password change)
+          const credential = window.firebaseFns.EmailAuthProvider.credential(authUser.email, currentPassword);
+          await window.firebaseFns.reauthenticateWithCredential(authUser, credential);
+          // Now update password
+          await window.firebaseFns.updatePassword(authUser, newPassword);
+          setSuccess(true);
+          setTimeout(() => onClose(), 1800);
+        } catch (e) {
+          setError(translateAuthError(e.code) || 'Kunne ikke ændre adgangskoden');
+        }
+        setSubmitting(false);
+      };
+
+      return (
+        <Modal onClose={onClose} title="Skift adgangskode">
+          {success ? (
+            <div style={styles.successBox}>
+              ✓ Din adgangskode er ændret. Husk den til næste login!
+            </div>
+          ) : (
+            <>
+              <div style={styles.helpText}>
+                Indtast din nuværende adgangskode for at bekræfte, og vælg derefter en ny.
+              </div>
+
+              <label style={{...styles.label, marginTop: 18}}>Nuværende adgangskode</label>
+              <input style={styles.input} type="password" value={currentPassword}
+                onChange={e => setCurrentPassword(e.target.value)} placeholder="••••••••" autoFocus />
+
+              <label style={{...styles.label, marginTop: 18}}>Ny adgangskode (mindst 6 tegn)</label>
+              <input style={styles.input} type="password" value={newPassword}
+                onChange={e => setNewPassword(e.target.value)} placeholder="••••••••" />
+
+              <label style={{...styles.label, marginTop: 18}}>Gentag ny adgangskode</label>
+              <input style={styles.input} type="password" value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)} placeholder="••••••••"
+                onKeyDown={e => e.key === 'Enter' && submit()} />
+
+              {error && <div style={styles.errorBox}>{error}</div>}
+
+              <div style={styles.modalActions}>
+                <button onClick={onClose} style={styles.ghostBtn}>Annullér</button>
+                <button onClick={submit} style={styles.primaryBtn}
+                  disabled={!currentPassword || !newPassword || !confirmPassword || submitting}>
+                  {submitting ? 'Ændrer…' : 'Skift adgangskode'}
+                </button>
+              </div>
+            </>
+          )}
         </Modal>
       );
     }
@@ -1184,78 +1824,203 @@
       );
     }
 
-    function TaskDetailModal({ task, users, userProfile, comments, onClose, onStatusChange, onAddComment, onDelete }) {
+    function TaskDetailModal({ task, users, userProfile, comments, onClose, onStatusChange, onAddComment, onDelete, onUpdate }) {
       const [comment, setComment] = useState('');
+      const [editMode, setEditMode] = useState(false);
+      // Edit fields
+      const [editTitle, setEditTitle] = useState('');
+      const [editDescription, setEditDescription] = useState('');
+      const [editAssigneeId, setEditAssigneeId] = useState('');
+      const [editPriority, setEditPriority] = useState('normal');
+      const [editDueDate, setEditDueDate] = useState('');
+      const [editVisibility, setEditVisibility] = useState('all');
+      const [editVisibleTo, setEditVisibleTo] = useState([]);
+
       if (!task) return null;
       const assignee = users.find(u => u.id === task.assigneeId);
-      const canDelete = userProfile.role === 'leder' || task.createdBy === userProfile.id;
+      const canEdit = userProfile.role === 'leder' || task.createdBy === userProfile.id;
+
+      const startEdit = () => {
+        setEditTitle(task.title || '');
+        setEditDescription(task.description || '');
+        setEditAssigneeId(task.assigneeId || '');
+        setEditPriority(task.priority || 'normal');
+        setEditDueDate(task.dueDate || '');
+        setEditVisibility(task.visibility || 'all');
+        setEditVisibleTo(task.visibleTo || []);
+        setEditMode(true);
+      };
+
+      const toggleVisibleTo = (userId) => {
+        setEditVisibleTo(prev => prev.includes(userId)
+          ? prev.filter(id => id !== userId)
+          : [...prev, userId]);
+      };
+
+      const saveEdits = () => {
+        if (!editTitle.trim()) return;
+        onUpdate(task.id, {
+          title: editTitle.trim(),
+          description: editDescription.trim(),
+          assigneeId: editAssigneeId,
+          priority: editPriority,
+          dueDate: editDueDate,
+          visibility: editVisibility,
+          visibleTo: editVisibility === 'specific' ? editVisibleTo : [],
+        });
+        setEditMode(false);
+      };
+
       const send = () => {
         if (!comment.trim()) return;
         onAddComment(task.id, comment);
         setComment('');
       };
 
+      const selectableUsers = users.filter(u => u.id !== userProfile.id);
+
       return (
-        <Modal onClose={onClose} title="Opgavedetaljer" wide>
-          {task.priority === 'high' && (
-            <div style={styles.priorityBanner}>
-              <Icon name="alert" size={14} /> Høj prioritet
-            </div>
-          )}
-          <div style={styles.taskDetailTitle}>{task.title}</div>
-          {task.description && <div style={styles.taskDetailDesc}>{task.description}</div>}
+        <Modal onClose={onClose} title={editMode ? "Rediger opgave" : "Opgavedetaljer"} wide>
+          {editMode ? (
+            <>
+              <label style={styles.label}>Titel *</label>
+              <input style={styles.input} value={editTitle} onChange={e => setEditTitle(e.target.value)} autoFocus />
 
-          <div style={styles.taskDetailMeta}>
-            <div style={styles.metaItem}><span style={styles.metaLabel}>Status</span><span style={styles.metaVal}>{task.status === 'todo' ? 'At gøre' : task.status === 'in_progress' ? 'I gang' : 'Færdig'}</span></div>
-            <div style={styles.metaItem}><span style={styles.metaLabel}>Tildelt</span><span style={styles.metaVal}>{assignee ? assignee.name : '—'}</span></div>
-            <div style={styles.metaItem}><span style={styles.metaLabel}>Oprettet af</span><span style={styles.metaVal}>{task.createdByName}</span></div>
-            {task.dueDate && <div style={styles.metaItem}><span style={styles.metaLabel}>Deadline</span><span style={styles.metaVal}>{new Date(task.dueDate).toLocaleDateString('da-DK')}</span></div>}
-          </div>
+              <label style={{...styles.label, marginTop: 18}}>Beskrivelse</label>
+              <textarea style={styles.textarea} value={editDescription} onChange={e => setEditDescription(e.target.value)} rows={4} />
 
-          <div style={styles.statusRow}>
-            {['todo', 'in_progress', 'done'].map(s => (
-              <button key={s} onClick={() => onStatusChange(task.id, s)} style={task.status === s ? styles.roleBtnActive : styles.roleBtn}>
-                {s === 'todo' ? 'At gøre' : s === 'in_progress' ? 'I gang' : 'Færdig'}
-              </button>
-            ))}
-          </div>
+              <div style={styles.formRow}>
+                <div style={{flex: 1}}>
+                  <label style={styles.label}>Tildel til</label>
+                  <select style={styles.input} value={editAssigneeId} onChange={e => setEditAssigneeId(e.target.value)}>
+                    <option value="">Ikke tildelt</option>
+                    {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                  </select>
+                </div>
+                <div style={{flex: 1}}>
+                  <label style={styles.label}>Deadline</label>
+                  <input style={styles.input} type="date" value={editDueDate} onChange={e => setEditDueDate(e.target.value)} />
+                </div>
+              </div>
 
-          <div style={styles.commentSection}>
-            <div style={styles.commentHead}>
-              <Icon name="message" size={15} /> Kommentarer ({comments.length})
-            </div>
-            <div style={styles.commentList}>
-              {comments.length === 0 && <div style={styles.empty}>Ingen kommentarer endnu.</div>}
-              {comments.map(c => (
-                <div key={c.id} style={styles.commentItem}>
-                  <div style={styles.commentAvatar}>{c.author[0].toUpperCase()}</div>
-                  <div style={{flex: 1}}>
-                    <div style={styles.commentHeader}>
-                      <strong>{c.author}</strong>
-                      <span style={styles.commentDate}>{new Date(c.createdAt).toLocaleString('da-DK', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
-                    </div>
-                    <div style={styles.commentText}>{c.text}</div>
+              <label style={{...styles.label, marginTop: 18}}>Prioritet</label>
+              <div style={styles.roleGroup}>
+                {[{v:'low',l:'Lav'},{v:'normal',l:'Normal'},{v:'high',l:'Høj'}].map(p => (
+                  <button key={p.v} onClick={() => setEditPriority(p.v)} style={editPriority === p.v ? styles.roleBtnActive : styles.roleBtn}>{p.l}</button>
+                ))}
+              </div>
+
+              <label style={{...styles.label, marginTop: 18}}>Synlig for</label>
+              <div style={styles.roleGroup}>
+                <button onClick={() => setEditVisibility('all')} style={editVisibility === 'all' ? styles.roleBtnActive : styles.roleBtn}>🌍 Alle</button>
+                <button onClick={() => setEditVisibility('specific')} style={editVisibility === 'specific' ? styles.roleBtnActive : styles.roleBtn}>👥 Specifikke</button>
+                <button onClick={() => setEditVisibility('private')} style={editVisibility === 'private' ? styles.roleBtnActive : styles.roleBtn}>🔒 Kun mig</button>
+              </div>
+
+              {editVisibility === 'specific' && (
+                <div style={styles.specificPicker}>
+                  <div style={styles.specificList}>
+                    {selectableUsers.map(u => {
+                      const checked = editVisibleTo.includes(u.id);
+                      return (
+                        <label key={u.id} style={checked ? styles.specificItemActive : styles.specificItem}>
+                          <input type="checkbox" checked={checked} onChange={() => toggleVisibleTo(u.id)} />
+                          <div style={styles.specificAvatar}>{u.name[0].toUpperCase()}</div>
+                          <div style={{flex: 1}}><div style={{fontSize: 13, fontWeight: 500}}>{u.name}</div></div>
+                        </label>
+                      );
+                    })}
                   </div>
                 </div>
-              ))}
-            </div>
-            <div style={styles.commentInputRow}>
-              <input style={{...styles.input, flex: 1, marginTop: 0}} value={comment} onChange={e => setComment(e.target.value)} placeholder="Skriv en kommentar…" onKeyDown={e => e.key === 'Enter' && send()} />
-              <button onClick={send} style={styles.primaryBtn} disabled={!comment.trim()}>
-                <Icon name="send" size={15} />
-              </button>
-            </div>
-          </div>
+              )}
 
-          <div style={styles.modalActions}>
-            {canDelete && (
-              <button onClick={() => onDelete(task.id)} style={styles.dangerBtn}>
-                <Icon name="trash" size={14} /> Slet opgave
-              </button>
-            )}
-            <div style={{flex: 1}}></div>
-            <button onClick={onClose} style={styles.ghostBtn}>Luk</button>
-          </div>
+              <div style={styles.modalActions}>
+                <button onClick={() => setEditMode(false)} style={styles.ghostBtn}>Annullér</button>
+                <button onClick={saveEdits} style={styles.primaryBtn} disabled={!editTitle.trim()}>Gem ændringer</button>
+              </div>
+            </>
+          ) : (
+            <>
+              {task.priority === 'high' && (
+                <div style={styles.priorityBanner}>
+                  <Icon name="alert" size={14} /> Høj prioritet
+                </div>
+              )}
+              <div style={styles.taskDetailTitle}>{task.title}</div>
+              {task.description && <div style={styles.taskDetailDesc}>{task.description}</div>}
+
+              <div style={styles.taskDetailMeta}>
+                <div style={styles.metaItem}><span style={styles.metaLabel}>Status</span><span style={styles.metaVal}>{task.status === 'todo' ? 'At gøre' : task.status === 'in_progress' ? 'I gang' : 'Færdig'}</span></div>
+                <div style={styles.metaItem}><span style={styles.metaLabel}>Tildelt</span><span style={styles.metaVal}>{assignee ? assignee.name : '—'}</span></div>
+                <div style={styles.metaItem}><span style={styles.metaLabel}>Oprettet af</span><span style={styles.metaVal}>{task.createdByName}</span></div>
+                {task.dueDate && <div style={styles.metaItem}><span style={styles.metaLabel}>Deadline</span><span style={styles.metaVal}>{new Date(task.dueDate).toLocaleDateString('da-DK')}</span></div>}
+                <div style={styles.metaItem}>
+                  <span style={styles.metaLabel}>Synlighed</span>
+                  <span style={styles.metaVal}>
+                    {(!task.visibility || task.visibility === 'all') && '🌍 Alle'}
+                    {task.visibility === 'specific' && `👥 Specifikke (${(task.visibleTo || []).length + 1} pers.)`}
+                    {task.visibility === 'private' && '🔒 Privat'}
+                  </span>
+                </div>
+                {task.updatedAt && (
+                  <div style={styles.metaItem}>
+                    <span style={styles.metaLabel}>Sidst redigeret</span>
+                    <span style={styles.metaVal}>{new Date(task.updatedAt).toLocaleDateString('da-DK')} af {task.updatedBy || '—'}</span>
+                  </div>
+                )}
+              </div>
+
+              <div style={styles.statusRow}>
+                {['todo', 'in_progress', 'done'].map(s => (
+                  <button key={s} onClick={() => onStatusChange(task.id, s)} style={task.status === s ? styles.roleBtnActive : styles.roleBtn}>
+                    {s === 'todo' ? 'At gøre' : s === 'in_progress' ? 'I gang' : 'Færdig'}
+                  </button>
+                ))}
+              </div>
+
+              <div style={styles.commentSection}>
+                <div style={styles.commentHead}>
+                  <Icon name="message" size={15} /> Kommentarer ({comments.length})
+                </div>
+                <div style={styles.commentList}>
+                  {comments.length === 0 && <div style={styles.empty}>Ingen kommentarer endnu.</div>}
+                  {comments.map(c => (
+                    <div key={c.id} style={styles.commentItem}>
+                      <div style={styles.commentAvatar}>{c.author[0].toUpperCase()}</div>
+                      <div style={{flex: 1}}>
+                        <div style={styles.commentHeader}>
+                          <strong>{c.author}</strong>
+                          <span style={styles.commentDate}>{new Date(c.createdAt).toLocaleString('da-DK', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                        <div style={styles.commentText}>{c.text}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={styles.commentInputRow}>
+                  <input style={{...styles.input, flex: 1, marginTop: 0}} value={comment} onChange={e => setComment(e.target.value)} placeholder="Skriv en kommentar…" onKeyDown={e => e.key === 'Enter' && send()} />
+                  <button onClick={send} style={styles.primaryBtn} disabled={!comment.trim()}>
+                    <Icon name="send" size={15} />
+                  </button>
+                </div>
+              </div>
+
+              <div style={styles.modalActions}>
+                {canEdit && (
+                  <>
+                    <button onClick={startEdit} style={styles.ghostBtn}>
+                      <Icon name="edit" size={14} /> Rediger
+                    </button>
+                    <button onClick={() => onDelete(task.id)} style={styles.dangerBtn}>
+                      <Icon name="trash" size={14} /> Slet opgave
+                    </button>
+                  </>
+                )}
+                <div style={{flex: 1}}></div>
+                <button onClick={onClose} style={styles.ghostBtn}>Luk</button>
+              </div>
+            </>
+          )}
         </Modal>
       );
     }
@@ -1309,6 +2074,14 @@
         send: <><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>,
         chart: <><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></>,
         bell: <><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></>,
+        lock: <><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>,
+        globe: <><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></>,
+        briefcase: <><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></>,
+        shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>,
+        'chevron-up': <polyline points="18 15 12 9 6 15"/>,
+        'chevron-down': <polyline points="6 9 12 15 18 9"/>,
+        edit: <><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></>,
+        menu: <><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></>,
       };
       return <svg {...props}>{paths[name] || paths.circle}</svg>;
     }
@@ -1319,6 +2092,20 @@
 
     const styles = {
       app: { display: 'flex', minHeight: '100vh', background: 'var(--bg)', color: 'var(--ink)', fontFamily: 'var(--body)' },
+      appMobile: { display: 'flex', flexDirection: 'column', minHeight: '100vh', background: 'var(--bg)', color: 'var(--ink)', fontFamily: 'var(--body)' },
+
+      // Mobile topbar
+      mobileTopbar: { display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'var(--surface)', borderBottom: '1px solid var(--line)', position: 'sticky', top: 0, zIndex: 50 },
+      burgerBtn: { background: 'transparent', border: 'none', padding: 6, color: 'var(--ink)', borderRadius: 3, display: 'inline-flex', alignItems: 'center', cursor: 'pointer' },
+      mobileTopbarTitle: { fontFamily: 'var(--display)', fontSize: 17, fontWeight: 500, letterSpacing: '-0.01em', flex: 1, display: 'flex', alignItems: 'center', gap: 8 },
+      mobileMark: { width: 24, height: 24, borderRadius: '50%', background: 'var(--ink)', color: 'var(--bg)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 },
+      mobileTopbarAvatar: { width: 32, height: 32, borderRadius: '50%', background: 'var(--warm)', color: 'var(--surface)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 13, flexShrink: 0 },
+
+      // Mobile sidebar overlay
+      mobileSidebarOverlay: { position: 'fixed', inset: 0, background: 'rgba(26,24,20,0.45)', zIndex: 200, animation: 'fadeIn 0.2s ease' },
+      mobileSidebarPanel: { position: 'absolute', left: 0, top: 0, bottom: 0, width: '85%', maxWidth: 300, background: 'var(--surface)', boxShadow: '0 0 40px rgba(0,0,0,0.15)' },
+
+      mainMobile: { flex: 1, padding: '20px 18px 80px', maxWidth: '100%', minWidth: 0 },
       loadingScreen: { minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, background: 'var(--bg)' },
       loadingDot: { width: 10, height: 10, borderRadius: '50%', background: 'var(--warm)', animation: 'pulse 1.2s ease-in-out infinite' },
       loadingText: { fontFamily: 'var(--display)', fontSize: 17, color: 'var(--ink-soft)', fontStyle: 'italic' },
@@ -1332,10 +2119,17 @@
       loginDivider: { height: 1, background: 'var(--line)', margin: '0 0 28px 0' },
       loginFoot: { marginTop: 24, fontSize: 12, color: 'var(--ink-faint)', textAlign: 'center', fontStyle: 'italic', fontFamily: 'var(--display)' },
       errorBox: { marginTop: 16, padding: '10px 14px', background: 'rgba(168,54,44,0.08)', border: '1px solid rgba(168,54,44,0.2)', borderRadius: 3, fontSize: 13, color: 'var(--red)' },
+      successBox: { marginTop: 16, padding: '12px 14px', background: 'rgba(61,110,74,0.08)', border: '1px solid rgba(61,110,74,0.25)', borderRadius: 3, fontSize: 13, color: 'var(--green)', lineHeight: 1.5 },
+      linkBtn: { marginTop: 12, background: 'transparent', border: 'none', color: 'var(--ink-soft)', fontSize: 12, textDecoration: 'underline', padding: '6px 0', cursor: 'pointer', width: '100%', textAlign: 'center' },
       warningBox: { padding: '12px 14px', background: 'rgba(196,98,42,0.06)', border: '1px solid rgba(196,98,42,0.2)', borderRadius: 3, fontSize: 12, color: 'var(--ink-soft)', marginBottom: 18, lineHeight: 1.5 },
-      helpText: { fontSize: 11, color: 'var(--ink-faint)', marginTop: 4, fontStyle: 'italic' },
+      helpText: { fontSize: 12, color: 'var(--ink-soft)', marginTop: 4, lineHeight: 1.5 },
+
+      userChip: { display: 'flex', alignItems: 'center', gap: 10, padding: 8, background: 'transparent', border: 'none', width: '100%', cursor: 'pointer', borderRadius: 3, transition: 'background 0.15s' },
+      userMenu: { background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 3, marginBottom: 8, overflow: 'hidden', boxShadow: '0 -4px 12px -4px rgba(26,24,20,0.1)' },
+      userMenuItem: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', width: '100%', background: 'transparent', border: 'none', textAlign: 'left', fontSize: 13, color: 'var(--ink)', cursor: 'pointer', borderBottom: '1px solid var(--line-soft)' },
 
       sidebar: { width: 248, background: 'var(--surface)', borderRight: '1px solid var(--line)', display: 'flex', flexDirection: 'column', padding: 20, position: 'sticky', top: 0, height: '100vh' },
+      sidebarMobile: { width: '100%', background: 'var(--surface)', display: 'flex', flexDirection: 'column', padding: 20, height: '100vh', overflow: 'auto' },
       sidebarBrand: { display: 'flex', alignItems: 'center', gap: 11, padding: '8px 10px', marginBottom: 28 },
       sidebarMark: { width: 30, height: 30, borderRadius: '50%', background: 'var(--ink)', color: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 },
       sidebarBrandText: { fontFamily: 'var(--display)', fontSize: 18, fontWeight: 500, letterSpacing: '-0.01em' },
@@ -1346,15 +2140,16 @@
       navBadgeActive: { marginLeft: 'auto', background: 'rgba(245,241,234,0.15)', color: 'var(--bg)', fontSize: 11, fontWeight: 600, padding: '2px 7px', borderRadius: 10, minWidth: 22, textAlign: 'center' },
       navDivider: { fontSize: 10, color: 'var(--ink-faint)', letterSpacing: '0.12em', textTransform: 'uppercase', fontWeight: 600, padding: '14px 12px 6px', marginTop: 4 },
       sidebarFoot: { borderTop: '1px solid var(--line)', paddingTop: 16, marginTop: 16 },
-      userChip: { display: 'flex', alignItems: 'center', gap: 10, padding: 8 },
       userAvatar: { width: 34, height: 34, borderRadius: '50%', background: 'var(--warm)', color: 'var(--surface)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 14, flexShrink: 0 },
       userName: { fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       userRole: { fontSize: 11, color: 'var(--ink-faint)', textTransform: 'uppercase', letterSpacing: '0.06em' },
 
       main: { flex: 1, padding: '40px 56px 80px', maxWidth: 1280, minWidth: 0 },
       header: { marginBottom: 36, borderBottom: '1px solid var(--line)', paddingBottom: 28 },
+      headerMobile: { marginBottom: 22, borderBottom: '1px solid var(--line)', paddingBottom: 18 },
       headerEyebrow: { fontSize: 12, color: 'var(--warm)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10, fontWeight: 600 },
       headerTitle: { fontFamily: 'var(--display)', fontSize: 44, fontWeight: 400, letterSpacing: '-0.025em', margin: 0, lineHeight: 1.05 },
+      headerTitleMobile: { fontFamily: 'var(--display)', fontSize: 30, fontWeight: 400, letterSpacing: '-0.02em', margin: 0, lineHeight: 1.1 },
       headerSub: { color: 'var(--ink-soft)', marginTop: 8, fontSize: 15 },
 
       viewBody: { display: 'flex', flexDirection: 'column', gap: 24, animation: 'fadeIn 0.3s ease' },
@@ -1372,6 +2167,7 @@
       miniBtn: { background: 'var(--surface-2)', border: '1px solid var(--line)', padding: '4px 9px', borderRadius: 2, fontSize: 11, color: 'var(--ink-soft)', fontWeight: 500, display: 'inline-flex', alignItems: 'center', gap: 3 },
 
       kanban: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 18 },
+      kanbanMobile: { display: 'flex', flexDirection: 'column', gap: 14 },
       column: { background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 3, overflow: 'hidden', display: 'flex', flexDirection: 'column' },
       columnHead: { padding: '14px 16px', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: 9, color: 'var(--ink-soft)' },
       columnTitle: { fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600, flex: 1 },
@@ -1397,8 +2193,10 @@
       docContent: { fontSize: 13, color: 'var(--ink)', lineHeight: 1.6, padding: '14px 0', borderTop: '1px solid var(--line-soft)', borderBottom: '1px solid var(--line-soft)', maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap' },
       docFoot: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--ink-faint)', marginTop: 4 },
       docDelete: { marginLeft: 'auto', background: 'transparent', border: 'none', color: 'var(--ink-faint)', padding: 4, borderRadius: 3, cursor: 'pointer' },
+      docAction: { background: 'transparent', border: '1px solid var(--line)', color: 'var(--ink-soft)', padding: '5px 7px', borderRadius: 3, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' },
 
       statsRow: { display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 14 },
+      statsRowMobile: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 },
       statCard: { background: 'var(--surface)', border: '1px solid var(--line)', padding: 22, borderRadius: 3, display: 'flex', flexDirection: 'column', gap: 6 },
       statValue: { fontFamily: 'var(--display)', fontSize: 38, fontWeight: 500, letterSpacing: '-0.025em', lineHeight: 1 },
       statLabel: { fontSize: 11, color: 'var(--ink-soft)', letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 500 },
@@ -1468,6 +2266,7 @@
 
       // Reception
       receptionGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 },
+      receptionGridMobile: { display: 'flex', flexDirection: 'column', gap: 24 },
       receptionCol: { display: 'flex', flexDirection: 'column', gap: 16 },
       receptionSectionHead: { display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, paddingBottom: 14, borderBottom: '1px solid var(--line)' },
       receptionSectionEyebrow: { fontSize: 10, color: 'var(--warm)', letterSpacing: '0.14em', textTransform: 'uppercase', fontWeight: 700, marginBottom: 4 },
@@ -1498,6 +2297,16 @@
       ackBtn: { display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--surface-2)', border: '1px solid var(--line)', padding: '6px 11px', borderRadius: 3, fontSize: 11, color: 'var(--ink)', fontWeight: 600 },
       ackedTag: { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--green)', fontWeight: 600 },
       ackList: { fontSize: 11, color: 'var(--ink-faint)', fontStyle: 'italic', paddingTop: 4 },
+
+      // Visibility
+      visIcon: { display: 'inline-flex', alignItems: 'center', marginRight: 6, color: 'var(--warm)', verticalAlign: 'middle' },
+      specificPicker: { marginTop: 14, padding: 14, background: 'var(--surface-2)', border: '1px solid var(--line)', borderRadius: 3 },
+      specificPickerHint: { fontSize: 12, color: 'var(--ink-soft)', marginBottom: 12, lineHeight: 1.5, fontStyle: 'italic' },
+      specificList: { display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' },
+      specificItem: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: 'var(--surface)', border: '1px solid var(--line-soft)', borderRadius: 3, cursor: 'pointer' },
+      specificItemActive: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: 'var(--warm-soft)', border: '1px solid var(--warm)', borderRadius: 3, cursor: 'pointer' },
+      specificAvatar: { width: 26, height: 26, borderRadius: '50%', background: 'var(--ink)', color: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 600, fontSize: 11, flexShrink: 0 },
+      visibilityHint: { marginTop: 14, padding: 14, background: 'var(--surface-2)', borderLeft: '3px solid var(--warm)', borderRadius: 2, fontSize: 13, color: 'var(--ink-soft)', lineHeight: 1.5 },
     };
 
     // Mount
