@@ -447,10 +447,28 @@
 
       const isAdmin = userProfile.role === 'leder';
 
-      // Compute badge counts for each department
+      // Helper: check if a task is visible to the current user (based on visibility settings)
+      const isTaskVisible = (task) => {
+        const visibility = task.visibility || 'all';
+        if (visibility === 'all') return true;
+        if (visibility === 'private') return task.createdBy === userProfile.id;
+        if (visibility === 'specific') {
+          if (task.createdBy === userProfile.id) return true;
+          if (task.assigneeId === userProfile.id) return true;
+          if ((task.visibleTo || []).includes(userProfile.id)) return true;
+          return false;
+        }
+        return true;
+      };
+
+      // Visible tasks for sidebar count
+      const visibleMainTasks = tasks.filter(isTaskVisible);
+
+      // Compute badge counts for each department (only count visible tasks)
       const deptBadges = {};
       DEPARTMENTS.forEach(dept => {
-        const openTasks = (deptTasks[dept.id] || []).filter(t => t.status !== 'done').length;
+        const visibleDeptTasks = (deptTasks[dept.id] || []).filter(isTaskVisible);
+        const openTasks = visibleDeptTasks.filter(t => t.status !== 'done').length;
         const unreadUrgent = (deptNotes[dept.id] || []).filter(n =>
           n.urgent && !(n.acknowledged || []).find(a => a.id === userProfile.id)
         ).length;
@@ -479,7 +497,7 @@
                   view={view}
                   setView={(v) => { setView(v); setSidebarOpen(false); }}
                   onLogout={handleLogout}
-                  taskCount={tasks.filter(t => t.status !== 'done').length}
+                  taskCount={visibleMainTasks.filter(t => t.status !== 'done').length}
                   docCount={documents.length}
                   departments={DEPARTMENTS}
                   deptBadges={deptBadges}
@@ -496,7 +514,7 @@
               userProfile={userProfile}
               view={view} setView={setView}
               onLogout={handleLogout}
-              taskCount={tasks.filter(t => t.status !== 'done').length}
+              taskCount={visibleMainTasks.filter(t => t.status !== 'done').length}
               docCount={documents.length}
               departments={DEPARTMENTS}
               deptBadges={deptBadges}
