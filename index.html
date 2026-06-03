@@ -1468,9 +1468,10 @@
         return true;
       });
 
-      // Counts for ownership filter badges (only count tasks the user can see)
-      const myCount = visibleTasks.filter(t => t.createdBy === currentUserId).length;
-      const assignedCount = visibleTasks.filter(t => t.assigneeId === currentUserId).length;
+      // Counts for ownership filter badges (only count active/visible tasks - exclude done)
+      const activeTasks = visibleTasks.filter(t => t.status !== 'done');
+      const myCount = activeTasks.filter(t => t.createdBy === currentUserId).length;
+      const assignedCount = activeTasks.filter(t => t.assigneeId === currentUserId).length;
 
       const filtered = visibleTasks.filter(t => {
         if (filterOwnership === 'mine' && t.createdBy !== currentUserId) return false;
@@ -1516,7 +1517,7 @@
               style={filterOwnership === 'all' ? styles.ownershipBtnActive : styles.ownershipBtn}>
               <Icon name="globe" size={13} />
               Alle opgaver
-              <span style={filterOwnership === 'all' ? styles.ownershipCountActive : styles.ownershipCount}>{visibleTasks.length}</span>
+              <span style={filterOwnership === 'all' ? styles.ownershipCountActive : styles.ownershipCount}>{activeTasks.length}</span>
             </button>
             <button
               onClick={() => setFilterOwnership('mine')}
@@ -1695,9 +1696,10 @@
         return true;
       });
 
-      // Counts for ownership filter
-      const myCount = visibleTasks.filter(t => t.createdBy === userProfile.id).length;
-      const assignedCount = visibleTasks.filter(t => t.assigneeId === userProfile.id).length;
+      // Counts for ownership filter (exclude done tasks)
+      const activeTasks = visibleTasks.filter(t => t.status !== 'done');
+      const myCount = activeTasks.filter(t => t.createdBy === userProfile.id).length;
+      const assignedCount = activeTasks.filter(t => t.assigneeId === userProfile.id).length;
 
       // Apply ownership filter
       const ownershipFiltered = visibleTasks.filter(t => {
@@ -1755,7 +1757,7 @@
                     style={filterOwnership === 'all' ? styles.ownershipBtnActive : styles.ownershipBtn}>
                     <Icon name="globe" size={13} />
                     Alle
-                    <span style={filterOwnership === 'all' ? styles.ownershipCountActive : styles.ownershipCount}>{visibleTasks.length}</span>
+                    <span style={filterOwnership === 'all' ? styles.ownershipCountActive : styles.ownershipCount}>{activeTasks.length}</span>
                   </button>
                   <button
                     onClick={() => setFilterOwnership('mine')}
