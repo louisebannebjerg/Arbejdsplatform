@@ -141,8 +141,11 @@
       const [selectedTask, setSelectedTask] = useState(null);
       const [yearwheelTasks, setYearwheelTasks] = useState([]);
       const [yearwheelChecks, setYearwheelChecks] = useState({});
+      const [yearwheelDocs, setYearwheelDocs] = useState([]);
       const [yearwheelAccess, setYearwheelAccess] = useState({ userIds: [] });
       const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
+      const [showNewYearwheelDoc, setShowNewYearwheelDoc] = useState(false);
+      const [editYearwheelDoc, setEditYearwheelDoc] = useState(null);
       const [searchQuery, setSearchQuery] = useState('');
       const [filterStatus, setFilterStatus] = useState('all');
 
@@ -249,6 +252,12 @@
         unsubs.push(fns.onSnapshot(
           fns.doc(db, 'platform_settings', 'yearwheel_access'),
           (snap) => setYearwheelAccess(snap.exists() ? snap.data() : { userIds: [] })
+        ));
+
+        // Yearwheel documents
+        unsubs.push(fns.onSnapshot(
+          fns.query(fns.collection(db, 'platform_yearwheel_docs'), fns.orderBy('createdAt', 'desc')),
+          (snap) => setYearwheelDocs(snap.docs.map(d => ({ id: d.id, ...d.data() })))
         ));
 
         return () => unsubs.forEach(u => u());
@@ -494,6 +503,33 @@
             noteUpdatedBy: userProfile.name,
           });
         } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      const createYearwheelDoc = async (data) => {
+        try {
+          await fns.addDoc(fns.collection(db, 'platform_yearwheel_docs'), {
+            ...data,
+            createdBy: userProfile.id, createdByName: userProfile.name,
+            createdAt: new Date().toISOString(),
+          });
+          setShowNewYearwheelDoc(false);
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      const updateYearwheelDoc = async (id, data) => {
+        try {
+          await fns.updateDoc(fns.doc(db, 'platform_yearwheel_docs', id), {
+            ...data,
+            updatedAt: new Date().toISOString(),
+            updatedBy: userProfile.name,
+          });
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      const deleteYearwheelDoc = async (id) => {
+        if (!confirm('Slet dette dokument?')) return;
+        try { await fns.deleteDoc(fns.doc(db, 'platform_yearwheel_docs', id)); }
+        catch (e) { alert('Fejl: ' + e.message); }
       };
 
       const exportYearwheelPDF = (includeStatus) => {
@@ -904,6 +940,7 @@
             {view === 'yearwheel' && hasYearwheelAccess && <YearwheelView
               tasks={yearwheelTasks}
               checks={yearwheelChecks}
+              docs={yearwheelDocs}
               users={users}
               isAdmin={isAdmin}
               userProfile={userProfile}
@@ -917,6 +954,9 @@
               onSeedDefaults={seedYearwheelDefaults}
               onExportPDF={() => setShowExportYearwheel(true)}
               onSaveTaskNote={saveYearwheelTaskNote}
+              onNewDoc={() => setShowNewYearwheelDoc(true)}
+              onEditDoc={setEditYearwheelDoc}
+              onDeleteDoc={deleteYearwheelDoc}
               isMobile={isMobile} />}
             {view === 'team' && <TeamView users={users} tasks={tasks} userProfile={userProfile}
               onNewUser={() => setShowNewUser(true)} onUpdateRole={updateUserRole} isAdmin={isAdmin} />}
@@ -951,6 +991,13 @@
           {showExportYearwheel && <YearwheelExportModal
             onClose={() => setShowExportYearwheel(false)}
             onExport={(includeStatus) => { exportYearwheelPDF(includeStatus); setShowExportYearwheel(false); }} />}
+          {showNewYearwheelDoc && <YearwheelDocModal
+            onClose={() => setShowNewYearwheelDoc(false)}
+            onSave={(data) => createYearwheelDoc(data)} />}
+          {editYearwheelDoc && <YearwheelDocModal
+            doc={editYearwheelDoc}
+            onClose={() => setEditYearwheelDoc(null)}
+            onSave={(data) => { updateYearwheelDoc(editYearwheelDoc.id, data); setEditYearwheelDoc(null); }} />}
           {selectedTask && <TaskDetailModal task={tasks.find(t => t.id === selectedTask)} users={users}
             userProfile={userProfile} comments={comments[selectedTask] || []}
             onClose={() => setSelectedTask(null)} onStatusChange={updateTaskStatus}
@@ -1936,7 +1983,7 @@
       );
     }
 
-    function YearwheelView({ tasks, checks, users, isAdmin, userProfile, selectedMonth, setSelectedMonth, onToggleCheck, onNewTask, onEditTask, onDeleteTask, onManageAccess, onSeedDefaults, onExportPDF, onSaveTaskNote, isMobile }) {
+    function YearwheelView({ tasks, checks, docs, users, isAdmin, userProfile, selectedMonth, setSelectedMonth, onToggleCheck, onNewTask, onEditTask, onDeleteTask, onManageAccess, onSeedDefaults, onExportPDF, onSaveTaskNote, onNewDoc, onEditDoc, onDeleteDoc, isMobile }) {
       const [expandedTaskId, setExpandedTaskId] = useState(null);
       const [editingNoteForTask, setEditingNoteForTask] = useState(null);
       const [noteDraft, setNoteDraft] = useState('');
@@ -2184,7 +2231,109 @@
               </div>
             </div>
           </div>
+
+          <div style={styles.yearwheelDocsSection}>
+            <div style={styles.yearwheelDocsHead}>
+              <div>
+                <div style={styles.headerEyebrow}>Dokumenter</div>
+                <div style={styles.yearwheelDocsTitle}>Tilknyttede dokumenter og procedurer</div>
+                <div style={{fontSize: 12, color: 'var(--ink-soft)', marginTop: 4}}>
+                  Dokumenter, vejledninger og længere procedurebeskrivelser som hører til årshjulets opgaver.
+                </div>
+              </div>
+              <div style={{flex: 1}}></div>
+              {isAdmin && (
+                <button onClick={onNewDoc} style={styles.primaryBtn}>
+                  <Icon name="plus" size={14} /> Nyt dokument
+                </button>
+              )}
+            </div>
+
+            {(!docs || docs.length === 0) ? (
+              <div style={styles.yearwheelEmpty}>
+                Ingen dokumenter endnu.
+                {isAdmin && ' Klik "Nyt dokument" for at oprette et — fx en udvidet procedure for årsafslutning.'}
+              </div>
+            ) : (
+              <div style={styles.yearwheelDocsGrid}>
+                {docs.map(doc => (
+                  <div key={doc.id} style={styles.yearwheelDocCard}>
+                    {doc.month && <div style={styles.yearwheelDocMonthTag}>{['Januar','Februar','Marts','April','Maj','Juni','Juli','August','September','Oktober','November','December'][doc.month - 1]}</div>}
+                    <div style={styles.yearwheelDocTitle}>{doc.title}</div>
+                    {doc.description && <div style={styles.yearwheelDocDesc}>{doc.description}</div>}
+                    <div style={styles.yearwheelDocContent}>{doc.content}</div>
+                    <div style={styles.yearwheelDocFoot}>
+                      <span>Af {doc.createdByName}</span>
+                      <span>·</span>
+                      <span>{new Date(doc.createdAt).toLocaleDateString('da-DK', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                      {doc.updatedAt && (
+                        <>
+                          <span>·</span>
+                          <span style={{fontStyle: 'italic'}}>opdateret {new Date(doc.updatedAt).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' })}</span>
+                        </>
+                      )}
+                      <div style={{flex: 1}}></div>
+                      {isAdmin && (
+                        <>
+                          <button onClick={() => onEditDoc(doc)} style={styles.docAction} title="Rediger">
+                            <Icon name="edit" size={13} />
+                          </button>
+                          <button onClick={() => onDeleteDoc(doc.id)} style={styles.docAction} title="Slet">
+                            <Icon name="trash" size={13} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
+      );
+    }
+
+    function YearwheelDocModal({ doc, onClose, onSave }) {
+      const [title, setTitle] = useState(doc ? doc.title : '');
+      const [description, setDescription] = useState(doc ? (doc.description || '') : '');
+      const [content, setContent] = useState(doc ? doc.content : '');
+      const [month, setMonth] = useState(doc ? (doc.month || '') : '');
+      const monthNames = ['Januar', 'Februar', 'Marts', 'April', 'Maj', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'December'];
+
+      const submit = () => {
+        if (!title.trim() || !content.trim()) return;
+        onSave({
+          title: title.trim(),
+          description: description.trim(),
+          content: content.trim(),
+          month: month ? Number(month) : null,
+        });
+      };
+
+      return (
+        <Modal onClose={onClose} title={doc ? 'Rediger dokument' : 'Nyt årshjul-dokument'} wide>
+          <label style={styles.label}>Titel *</label>
+          <input style={styles.input} value={title} onChange={e => setTitle(e.target.value)} placeholder="fx Procedure for årsafslutning" autoFocus />
+
+          <label style={{...styles.label, marginTop: 18}}>Tilknyt til måned (valgfrit)</label>
+          <select style={styles.input} value={month} onChange={e => setMonth(e.target.value)}>
+            <option value="">Ingen specifik måned</option>
+            {monthNames.map((n, i) => <option key={i + 1} value={i + 1}>{n}</option>)}
+          </select>
+
+          <label style={{...styles.label, marginTop: 18}}>Kort beskrivelse (valgfrit)</label>
+          <input style={styles.input} value={description} onChange={e => setDescription(e.target.value)} placeholder="Hvad handler dokumentet om?" />
+
+          <label style={{...styles.label, marginTop: 18}}>Indhold *</label>
+          <textarea style={{...styles.textarea, minHeight: 280}} value={content} onChange={e => setContent(e.target.value)} placeholder="Skriv hele dokumentet her — tjeklister, procedurer, kontaktinfo, instruktioner…" rows={14} />
+
+          <div style={styles.modalActions}>
+            <button onClick={onClose} style={styles.ghostBtn}>Annullér</button>
+            <button onClick={submit} style={styles.primaryBtn} disabled={!title.trim() || !content.trim()}>
+              {doc ? 'Gem ændringer' : 'Opret dokument'}
+            </button>
+          </div>
+        </Modal>
       );
     }
 
@@ -3359,6 +3508,16 @@
       yearwheelCategory: { fontWeight: 500 },
       yearwheelEmpty: { padding: 20, textAlign: 'center', color: 'var(--ink-faint)', fontSize: 13, background: 'var(--surface)', border: '1px dashed var(--line)', borderRadius: 4 },
       yearwheelHint: { marginTop: 16, padding: '10px 12px', background: 'var(--bg)', borderRadius: 4, fontSize: 12, color: 'var(--ink-soft)' },
+      yearwheelDocsSection: { marginTop: 40, paddingTop: 32, borderTop: '1px solid var(--line)' },
+      yearwheelDocsHead: { display: 'flex', alignItems: 'flex-end', gap: 12, marginBottom: 20, flexWrap: 'wrap' },
+      yearwheelDocsTitle: { fontFamily: 'var(--display)', fontSize: 22, fontWeight: 400, color: 'var(--ink)' },
+      yearwheelDocsGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 },
+      yearwheelDocCard: { background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 4, padding: 16, display: 'flex', flexDirection: 'column', gap: 8 },
+      yearwheelDocMonthTag: { display: 'inline-block', alignSelf: 'flex-start', fontSize: 10, fontWeight: 600, color: 'var(--warm)', textTransform: 'uppercase', letterSpacing: '0.08em', padding: '3px 8px', background: 'rgba(196,98,42,0.08)', borderRadius: 3 },
+      yearwheelDocTitle: { fontSize: 15, fontWeight: 600, color: 'var(--ink)', lineHeight: 1.3 },
+      yearwheelDocDesc: { fontSize: 13, color: 'var(--ink-soft)', fontStyle: 'italic' },
+      yearwheelDocContent: { fontSize: 13, color: 'var(--ink)', whiteSpace: 'pre-wrap', lineHeight: 1.5, maxHeight: 200, overflowY: 'auto', padding: '8px 10px', background: 'var(--bg)', borderRadius: 3, border: '1px solid var(--line)' },
+      yearwheelDocFoot: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--ink-faint)', marginTop: 4, paddingTop: 8, borderTop: '1px solid var(--line)' },
       assigneeChipInline: { display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--ink-soft)' },
       assigneeDotSmall: { width: 16, height: 16, borderRadius: '50%', background: 'var(--ink)', color: 'var(--bg)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 600 },
       handoverInput: { background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 3, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 },
