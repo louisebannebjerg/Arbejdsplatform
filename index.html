@@ -40,6 +40,8 @@
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- jsPDF for PDF export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
   <!-- Firebase v10 modular SDK via CDN -->
   <script type="module">
@@ -134,6 +136,8 @@
       const [showNewYearwheelTask, setShowNewYearwheelTask] = useState(null);
       const [editYearwheelTask, setEditYearwheelTask] = useState(null);
       const [showYearwheelAccess, setShowYearwheelAccess] = useState(false);
+      const [showExportYearwheel, setShowExportYearwheel] = useState(false);
+      const [showYearwheelExport, setShowYearwheelExport] = useState(false);
       const [selectedTask, setSelectedTask] = useState(null);
       const [yearwheelTasks, setYearwheelTasks] = useState([]);
       const [yearwheelChecks, setYearwheelChecks] = useState({});
@@ -482,6 +486,152 @@
         } catch (e) { alert('Fejl: ' + e.message); }
       };
 
+      const exportYearwheelPDF = (includeStatus) => {
+        try {
+          const { jsPDF } = window.jspdf;
+          const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+          const year = new Date().getFullYear();
+          const monthNames = ['Januar', 'Februar', 'Marts', 'April', 'Maj', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'December'];
+          const currentChecks = yearwheelChecks[String(year)] || {};
+
+          const pageWidth = 210;
+          const pageHeight = 297;
+          const marginX = 15;
+          const marginY = 15;
+          let y = marginY;
+
+          // Header
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(10);
+          doc.setTextColor(150);
+          doc.text('ARSHJUL', marginX, y);
+          y += 8;
+          doc.setFontSize(22);
+          doc.setTextColor(30);
+          doc.setFont('helvetica', 'bold');
+          doc.text(`Klinikkens arshjul ${year}`, marginX, y);
+          y += 7;
+          doc.setFontSize(10);
+          doc.setFont('helvetica', 'normal');
+          doc.setTextColor(110);
+          const totalTasks = yearwheelTasks.length;
+          const completedTasks = yearwheelTasks.filter(t => currentChecks[t.id]).length;
+          const headerSub = includeStatus
+            ? `Status: ${completedTasks} af ${totalTasks} opgaver klaret (${totalTasks ? Math.round(completedTasks/totalTasks*100) : 0}%)  ·  Genereret ${new Date().toLocaleDateString('da-DK')}`
+            : `${totalTasks} opgaver fordelt over aret  ·  Genereret ${new Date().toLocaleDateString('da-DK')}`;
+          doc.text(headerSub, marginX, y);
+          y += 8;
+
+          // Divider line
+          doc.setDrawColor(220);
+          doc.setLineWidth(0.3);
+          doc.line(marginX, y, pageWidth - marginX, y);
+          y += 6;
+
+          // Two columns
+          const colWidth = (pageWidth - marginX * 2 - 8) / 2;
+          const colX = [marginX, marginX + colWidth + 8];
+          let col = 0;
+          let colY = [y, y];
+
+          for (let m = 1; m <= 12; m++) {
+            const monthTasks = yearwheelTasks
+              .filter(t => t.month === m)
+              .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+
+            // Estimate height needed
+            const estimatedHeight = 8 + Math.max(1, monthTasks.length) * 5 + 4;
+
+            if (colY[col] + estimatedHeight > pageHeight - marginY) {
+              // Switch column or new page
+              if (col === 0) {
+                col = 1;
+              } else {
+                doc.addPage();
+                colY = [marginY, marginY];
+                col = 0;
+              }
+            }
+
+            let curY = colY[col];
+            const curX = colX[col];
+
+            // Month header
+            doc.setFontSize(13);
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(40);
+            doc.text(monthNames[m - 1], curX, curY);
+            if (includeStatus && monthTasks.length > 0) {
+              const monthDone = monthTasks.filter(t => currentChecks[t.id]).length;
+              doc.setFontSize(9);
+              doc.setFont('helvetica', 'normal');
+              doc.setTextColor(140);
+              doc.text(`${monthDone}/${monthTasks.length}`, curX + colWidth - 12, curY);
+            }
+            curY += 6;
+
+            doc.setFontSize(10);
+            doc.setFont('helvetica', 'normal');
+
+            if (monthTasks.length === 0) {
+              doc.setTextColor(170);
+              doc.text('(ingen opgaver)', curX + 2, curY);
+              curY += 5;
+            } else {
+              monthTasks.forEach(t => {
+                const isDone = !!currentChecks[t.id];
+                // Checkbox
+                doc.setDrawColor(120);
+                doc.setLineWidth(0.2);
+                doc.rect(curX, curY - 3, 3, 3);
+                if (includeStatus && isDone) {
+                  doc.setLineWidth(0.4);
+                  doc.line(curX + 0.5, curY - 1.5, curX + 1.3, curY - 0.4);
+                  doc.line(curX + 1.3, curY - 0.4, curX + 2.7, curY - 2.6);
+                  doc.setLineWidth(0.2);
+                }
+                // Title (replace special chars for PDF compatibility)
+                const titleClean = (t.title || '').replace(/[æÆ]/g, 'ae').replace(/[øØ]/g, 'oe').replace(/[åÅ]/g, 'aa');
+                const cat = t.category ? `[${t.category.replace(/[æÆ]/g, 'ae').replace(/[øØ]/g, 'oe').replace(/[åÅ]/g, 'aa')}] ` : '';
+
+                if (includeStatus && isDone) {
+                  doc.setTextColor(140);
+                } else {
+                  doc.setTextColor(40);
+                }
+
+                const fullText = cat + titleClean;
+                const lines = doc.splitTextToSize(fullText, colWidth - 6);
+                doc.text(lines, curX + 5, curY);
+                curY += lines.length * 4.5;
+
+                // Add check info if needed
+                if (includeStatus && isDone) {
+                  const check = currentChecks[t.id];
+                  doc.setFontSize(8);
+                  doc.setTextColor(160);
+                  const checkBy = (check.by || '').replace(/[æÆ]/g, 'ae').replace(/[øØ]/g, 'oe').replace(/[åÅ]/g, 'aa');
+                  const checkDate = new Date(check.at).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' });
+                  doc.text(`klaret ${checkDate} af ${checkBy}`, curX + 5, curY);
+                  curY += 3.5;
+                  doc.setFontSize(10);
+                }
+              });
+            }
+            curY += 3;
+            colY[col] = curY;
+
+            // Switch column
+            col = 1 - col;
+          }
+
+          doc.save(`Arshjul_${year}.pdf`);
+        } catch (e) {
+          alert('Fejl ved PDF-eksport: ' + e.message);
+        }
+      };
+
+
       const seedYearwheelDefaults = async () => {
         if (!confirm('Indlæs standardopgaverne for en tandlægeklinik? Du kan altid redigere eller slette dem bagefter.')) return;
         const defaults = [
@@ -755,6 +905,7 @@
               onDeleteTask={deleteYearwheelTask}
               onManageAccess={() => setShowYearwheelAccess(true)}
               onSeedDefaults={seedYearwheelDefaults}
+              onExportPDF={() => setShowExportYearwheel(true)}
               isMobile={isMobile} />}
             {view === 'team' && <TeamView users={users} tasks={tasks} userProfile={userProfile}
               onNewUser={() => setShowNewUser(true)} onUpdateRole={updateUserRole} isAdmin={isAdmin} />}
@@ -786,6 +937,9 @@
             adminUserId={userProfile.id}
             onClose={() => setShowYearwheelAccess(false)}
             onSave={(userIds) => { updateYearwheelAccess(userIds); setShowYearwheelAccess(false); }} />}
+          {showExportYearwheel && <YearwheelExportModal
+            onClose={() => setShowExportYearwheel(false)}
+            onExport={(includeStatus) => { exportYearwheelPDF(includeStatus); setShowExportYearwheel(false); }} />}
           {selectedTask && <TaskDetailModal task={tasks.find(t => t.id === selectedTask)} users={users}
             userProfile={userProfile} comments={comments[selectedTask] || []}
             onClose={() => setSelectedTask(null)} onStatusChange={updateTaskStatus}
@@ -1771,7 +1925,7 @@
       );
     }
 
-    function YearwheelView({ tasks, checks, users, isAdmin, userProfile, selectedMonth, setSelectedMonth, onToggleCheck, onNewTask, onEditTask, onDeleteTask, onManageAccess, onSeedDefaults, isMobile }) {
+    function YearwheelView({ tasks, checks, users, isAdmin, userProfile, selectedMonth, setSelectedMonth, onToggleCheck, onNewTask, onEditTask, onDeleteTask, onManageAccess, onSeedDefaults, onExportPDF, isMobile }) {
       const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'Maj', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dec'];
       const monthNamesFull = ['Januar', 'Februar', 'Marts', 'April', 'Maj', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'December'];
       const currentYear = new Date().getFullYear();
@@ -1855,6 +2009,11 @@
             {isAdmin && tasks.length === 0 && (
               <button onClick={onSeedDefaults} style={styles.primaryBtn}>
                 <Icon name="plus" size={14} /> Indlæs standardopgaver
+              </button>
+            )}
+            {tasks.length > 0 && (
+              <button onClick={onExportPDF} style={styles.ghostBtn}>
+                <Icon name="download" size={14} /> Eksporter PDF
               </button>
             )}
             {isAdmin && (
@@ -1981,6 +2140,42 @@
           <div style={styles.modalActions}>
             <button onClick={onClose} style={styles.ghostBtn}>Annullér</button>
             <button onClick={submit} style={styles.primaryBtn} disabled={!title.trim()}>{task ? 'Gem ændringer' : 'Tilføj opgave'}</button>
+          </div>
+        </Modal>
+      );
+    }
+
+    function YearwheelExportModal({ onClose, onExport }) {
+      const [includeStatus, setIncludeStatus] = useState(true);
+      return (
+        <Modal onClose={onClose} title="Eksporter årshjul som PDF">
+          <div style={styles.helpText}>
+            Vælg hvad PDF'en skal indeholde. Du kan eksportere så ofte du vil — fx en "ren" version til årets start og en med status til et møde.
+          </div>
+
+          <div style={{marginTop: 18, display: 'flex', flexDirection: 'column', gap: 10}}>
+            <label style={includeStatus ? styles.specificItemActive : styles.specificItem}>
+              <input type="radio" checked={includeStatus} onChange={() => setIncludeStatus(true)} />
+              <div style={{flex: 1}}>
+                <div style={{fontSize: 13, fontWeight: 500}}>📊 Med status</div>
+                <div style={{fontSize: 11, color: 'var(--ink-faint)'}}>Viser hvilke opgaver der er klaret, hvornår og af hvem.</div>
+              </div>
+            </label>
+
+            <label style={!includeStatus ? styles.specificItemActive : styles.specificItem}>
+              <input type="radio" checked={!includeStatus} onChange={() => setIncludeStatus(false)} />
+              <div style={{flex: 1}}>
+                <div style={{fontSize: 13, fontWeight: 500}}>📄 Ren liste (uden status)</div>
+                <div style={{fontSize: 11, color: 'var(--ink-faint)'}}>Alle opgaver med tomme tjekbokse — fx til at hænge op eller dele ud.</div>
+              </div>
+            </label>
+          </div>
+
+          <div style={styles.modalActions}>
+            <button onClick={onClose} style={styles.ghostBtn}>Annullér</button>
+            <button onClick={() => onExport(includeStatus)} style={styles.primaryBtn}>
+              <Icon name="download" size={14} /> Download PDF
+            </button>
           </div>
         </Modal>
       );
@@ -2848,6 +3043,7 @@
         menu: <><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></>,
         at: <><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></>,
         wheel: <><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="8"/><line x1="12" y1="16" x2="12" y2="22"/><line x1="2" y1="12" x2="8" y2="12"/><line x1="16" y1="12" x2="22" y2="12"/></>,
+        download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></>,
       };
       return <svg {...props}>{paths[name] || paths.circle}</svg>;
     }
