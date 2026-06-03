@@ -1451,6 +1451,7 @@
     }
 
     function TasksView({ tasks, users, comments, currentUserId, onNew, onSelect, onStatusChange, searchQuery, setSearchQuery, filterStatus, setFilterStatus, isMobile }) {
+      const [filterOwnership, setFilterOwnership] = useState('all'); // 'all' | 'mine' | 'assigned'
       // Filter tasks based on visibility
       const visibleTasks = tasks.filter(t => {
         // Default to 'all' for tasks created before visibility feature existed
@@ -1467,7 +1468,13 @@
         return true;
       });
 
+      // Counts for ownership filter badges (only count tasks the user can see)
+      const myCount = visibleTasks.filter(t => t.createdBy === currentUserId).length;
+      const assignedCount = visibleTasks.filter(t => t.assigneeId === currentUserId).length;
+
       const filtered = visibleTasks.filter(t => {
+        if (filterOwnership === 'mine' && t.createdBy !== currentUserId) return false;
+        if (filterOwnership === 'assigned' && t.assigneeId !== currentUserId) return false;
         if (filterStatus !== 'all' && t.status !== filterStatus) return false;
         if (searchQuery) {
           const q = searchQuery.toLowerCase();
@@ -1499,6 +1506,31 @@
             </div>
             <button style={styles.primaryBtn} onClick={onNew}>
               <Icon name="plus" size={16} /> Ny opgave
+            </button>
+          </div>
+
+          <div style={styles.ownershipFilterRow}>
+            <div style={styles.ownershipFilterLabel}>Vis</div>
+            <button
+              onClick={() => setFilterOwnership('all')}
+              style={filterOwnership === 'all' ? styles.ownershipBtnActive : styles.ownershipBtn}>
+              <Icon name="globe" size={13} />
+              Alle opgaver
+              <span style={filterOwnership === 'all' ? styles.ownershipCountActive : styles.ownershipCount}>{visibleTasks.length}</span>
+            </button>
+            <button
+              onClick={() => setFilterOwnership('mine')}
+              style={filterOwnership === 'mine' ? styles.ownershipBtnActive : styles.ownershipBtn}>
+              <Icon name="user" size={13} />
+              Mine opgaver
+              <span style={filterOwnership === 'mine' ? styles.ownershipCountActive : styles.ownershipCount}>{myCount}</span>
+            </button>
+            <button
+              onClick={() => setFilterOwnership('assigned')}
+              style={filterOwnership === 'assigned' ? styles.ownershipBtnActive : styles.ownershipBtn}>
+              <Icon name="inbox" size={13} />
+              Tildelt mig
+              <span style={filterOwnership === 'assigned' ? styles.ownershipCountActive : styles.ownershipCount}>{assignedCount}</span>
             </button>
           </div>
 
@@ -1647,6 +1679,7 @@
       const [urgent, setUrgent] = useState(false);
       const [editingNoteId, setEditingNoteId] = useState(null);
       const [editTask, setEditTask] = useState(null);
+      const [filterOwnership, setFilterOwnership] = useState('all'); // 'all' | 'mine' | 'assigned'
 
       // Apply visibility filtering (Kontor and Reception)
       const visibleTasks = tasks.filter(t => {
@@ -1662,6 +1695,17 @@
         return true;
       });
 
+      // Counts for ownership filter
+      const myCount = visibleTasks.filter(t => t.createdBy === userProfile.id).length;
+      const assignedCount = visibleTasks.filter(t => t.assigneeId === userProfile.id).length;
+
+      // Apply ownership filter
+      const ownershipFiltered = visibleTasks.filter(t => {
+        if (filterOwnership === 'mine') return t.createdBy === userProfile.id;
+        if (filterOwnership === 'assigned') return t.assigneeId === userProfile.id;
+        return true;
+      });
+
       const submitNote = () => {
         if (!noteText.trim()) return;
         const mentions = extractMentions(noteText, users);
@@ -1671,9 +1715,9 @@
       };
 
       const groupedTasks = {
-        todo: visibleTasks.filter(t => t.status === 'todo'),
-        in_progress: visibleTasks.filter(t => t.status === 'in_progress'),
-        done: visibleTasks.filter(t => t.status === 'done'),
+        todo: ownershipFiltered.filter(t => t.status === 'todo'),
+        in_progress: ownershipFiltered.filter(t => t.status === 'in_progress'),
+        done: ownershipFiltered.filter(t => t.status === 'done'),
       };
 
       const notesByDate = notes.reduce((acc, n) => {
@@ -1702,6 +1746,33 @@
                   <Icon name="plus" size={15} /> Ny opgave
                 </button>
               </div>
+
+              {visibleTasks.length > 0 && (
+                <div style={styles.ownershipFilterRow}>
+                  <div style={styles.ownershipFilterLabel}>Vis</div>
+                  <button
+                    onClick={() => setFilterOwnership('all')}
+                    style={filterOwnership === 'all' ? styles.ownershipBtnActive : styles.ownershipBtn}>
+                    <Icon name="globe" size={13} />
+                    Alle
+                    <span style={filterOwnership === 'all' ? styles.ownershipCountActive : styles.ownershipCount}>{visibleTasks.length}</span>
+                  </button>
+                  <button
+                    onClick={() => setFilterOwnership('mine')}
+                    style={filterOwnership === 'mine' ? styles.ownershipBtnActive : styles.ownershipBtn}>
+                    <Icon name="user" size={13} />
+                    Mine
+                    <span style={filterOwnership === 'mine' ? styles.ownershipCountActive : styles.ownershipCount}>{myCount}</span>
+                  </button>
+                  <button
+                    onClick={() => setFilterOwnership('assigned')}
+                    style={filterOwnership === 'assigned' ? styles.ownershipBtnActive : styles.ownershipBtn}>
+                    <Icon name="inbox" size={13} />
+                    Tildelt mig
+                    <span style={filterOwnership === 'assigned' ? styles.ownershipCountActive : styles.ownershipCount}>{assignedCount}</span>
+                  </button>
+                </div>
+              )}
 
               {visibleTasks.length === 0 ? (
                 <div style={styles.receptionEmpty}>
@@ -3280,6 +3351,8 @@
         bell: <><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></>,
         lock: <><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>,
         globe: <><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></>,
+        user: <><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></>,
+        inbox: <><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></>,
         briefcase: <><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></>,
         shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>,
         'chevron-up': <polyline points="18 15 12 9 6 15"/>,
@@ -3367,6 +3440,12 @@
       searchWrap: { display: 'flex', alignItems: 'center', gap: 8, padding: '0 14px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 3, minWidth: 240 },
       searchInput: { border: 'none', background: 'transparent', padding: '10px 0', outline: 'none', fontSize: 14, flex: 1, color: 'var(--ink)' },
       filterGroup: { display: 'flex', gap: 4, background: 'var(--surface)', padding: 3, border: '1px solid var(--line)', borderRadius: 3 },
+      ownershipFilterRow: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20, paddingBottom: 16, borderBottom: '1px solid var(--line)', flexWrap: 'wrap' },
+      ownershipFilterLabel: { fontSize: 11, color: 'var(--ink-faint)', letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600, marginRight: 4 },
+      ownershipBtn: { display: 'inline-flex', alignItems: 'center', gap: 8, background: 'var(--surface)', color: 'var(--ink)', border: '1px solid var(--line)', padding: '8px 14px', fontSize: 13, borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit' },
+      ownershipBtnActive: { display: 'inline-flex', alignItems: 'center', gap: 8, background: 'var(--ink)', color: 'var(--bg)', border: '1px solid var(--ink)', padding: '8px 14px', fontSize: 13, borderRadius: 3, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 500 },
+      ownershipCount: { color: 'var(--ink-faint)', fontSize: 11, fontWeight: 600 },
+      ownershipCountActive: { background: 'rgba(255,255,255,0.2)', color: 'var(--bg)', fontSize: 11, fontWeight: 600, padding: '0 6px', borderRadius: 8 },
       filterBtn: { border: 'none', background: 'transparent', padding: '7px 14px', fontSize: 13, color: 'var(--ink-soft)', borderRadius: 2, fontWeight: 500 },
       filterBtnActive: { border: 'none', background: 'var(--ink)', color: 'var(--bg)', padding: '7px 14px', fontSize: 13, borderRadius: 2, fontWeight: 500 },
 
