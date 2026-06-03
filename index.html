@@ -486,6 +486,16 @@
         } catch (e) { alert('Fejl: ' + e.message); }
       };
 
+      const saveYearwheelTaskNote = async (taskId, note) => {
+        try {
+          await fns.updateDoc(fns.doc(db, 'platform_yearwheel_tasks', taskId), {
+            note: note,
+            noteUpdatedAt: new Date().toISOString(),
+            noteUpdatedBy: userProfile.name,
+          });
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
       const exportYearwheelPDF = (includeStatus) => {
         try {
           const { jsPDF } = window.jspdf;
@@ -906,6 +916,7 @@
               onManageAccess={() => setShowYearwheelAccess(true)}
               onSeedDefaults={seedYearwheelDefaults}
               onExportPDF={() => setShowExportYearwheel(true)}
+              onSaveTaskNote={saveYearwheelTaskNote}
               isMobile={isMobile} />}
             {view === 'team' && <TeamView users={users} tasks={tasks} userProfile={userProfile}
               onNewUser={() => setShowNewUser(true)} onUpdateRole={updateUserRole} isAdmin={isAdmin} />}
@@ -1925,7 +1936,10 @@
       );
     }
 
-    function YearwheelView({ tasks, checks, users, isAdmin, userProfile, selectedMonth, setSelectedMonth, onToggleCheck, onNewTask, onEditTask, onDeleteTask, onManageAccess, onSeedDefaults, onExportPDF, isMobile }) {
+    function YearwheelView({ tasks, checks, users, isAdmin, userProfile, selectedMonth, setSelectedMonth, onToggleCheck, onNewTask, onEditTask, onDeleteTask, onManageAccess, onSeedDefaults, onExportPDF, onSaveTaskNote, isMobile }) {
+      const [expandedTaskId, setExpandedTaskId] = useState(null);
+      const [editingNoteForTask, setEditingNoteForTask] = useState(null);
+      const [noteDraft, setNoteDraft] = useState('');
       const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'Maj', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dec'];
       const monthNamesFull = ['Januar', 'Februar', 'Marts', 'April', 'Maj', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'December'];
       const currentYear = new Date().getFullYear();
@@ -2072,26 +2086,92 @@
                 ) : selectedMonthTasks.map(t => {
                   const check = currentChecks[t.id];
                   const isDone = !!check;
+                  const isExpanded = expandedTaskId === t.id;
+                  const isEditingNote = editingNoteForTask === t.id;
+                  const hasNote = !!(t.note && t.note.trim());
+
                   return (
-                    <div key={t.id} style={isDone ? styles.yearwheelTaskDone : styles.yearwheelTask}>
-                      <button onClick={() => onToggleCheck(t.id, currentYear)} style={isDone ? styles.yearwheelCheckDone : styles.yearwheelCheck} title={isDone ? 'Fjern markering' : 'Markér som klaret'}>
-                        {isDone && <Icon name="check" size={12} color="#fff" />}
-                      </button>
-                      <div style={{flex: 1, minWidth: 0}}>
-                        <div style={isDone ? styles.yearwheelTaskTitleDone : styles.yearwheelTaskTitle}>{t.title}</div>
-                        <div style={styles.yearwheelTaskMeta}>
-                          {t.category && (
-                            <span style={{...styles.yearwheelCategory, color: categoryColors[t.category] || 'var(--ink-soft)'}}>
-                              {t.category}
-                            </span>
+                    <div key={t.id} style={styles.yearwheelTaskWrapper}>
+                      <div style={isDone ? styles.yearwheelTaskDone : styles.yearwheelTask}>
+                        <button onClick={() => onToggleCheck(t.id, currentYear)} style={isDone ? styles.yearwheelCheckDone : styles.yearwheelCheck} title={isDone ? 'Fjern markering' : 'Markér som klaret'}>
+                          {isDone && <Icon name="check" size={12} color="#fff" />}
+                        </button>
+                        <div style={{flex: 1, minWidth: 0, cursor: 'pointer'}} onClick={() => setExpandedTaskId(isExpanded ? null : t.id)}>
+                          <div style={isDone ? styles.yearwheelTaskTitleDone : styles.yearwheelTaskTitle}>
+                            {t.title}
+                            {hasNote && <span style={styles.yearwheelNoteIndicator} title="Har note"> 📝</span>}
+                          </div>
+                          <div style={styles.yearwheelTaskMeta}>
+                            {t.category && (
+                              <span style={{...styles.yearwheelCategory, color: categoryColors[t.category] || 'var(--ink-soft)'}}>
+                                {t.category}
+                              </span>
+                            )}
+                            {isDone && <span>· ✓ {check.by} · {new Date(check.at).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' })}</span>}
+                          </div>
+                        </div>
+                        <div style={{display: 'flex', gap: 4, alignItems: 'center'}}>
+                          <button onClick={() => setExpandedTaskId(isExpanded ? null : t.id)} style={styles.miniBtn} title={isExpanded ? 'Skjul' : 'Vis note'}>
+                            <Icon name={isExpanded ? 'chevron-up' : 'chevron-down'} size={12} />
+                          </button>
+                          {isAdmin && (
+                            <>
+                              <button onClick={() => onEditTask(t)} style={styles.miniBtn} title="Rediger opgave"><Icon name="edit" size={12} /></button>
+                              <button onClick={() => onDeleteTask(t.id)} style={{...styles.miniBtn, color: 'var(--red)'}} title="Slet"><Icon name="trash" size={12} /></button>
+                            </>
                           )}
-                          {isDone && <span>· ✓ {check.by} · {new Date(check.at).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' })}</span>}
                         </div>
                       </div>
-                      {isAdmin && (
-                        <div style={{display: 'flex', gap: 4}}>
-                          <button onClick={() => onEditTask(t)} style={styles.miniBtn} title="Rediger"><Icon name="edit" size={12} /></button>
-                          <button onClick={() => onDeleteTask(t.id)} style={{...styles.miniBtn, color: 'var(--red)'}} title="Slet"><Icon name="trash" size={12} /></button>
+
+                      {isExpanded && (
+                        <div style={styles.yearwheelNoteSection}>
+                          {isEditingNote ? (
+                            <>
+                              <textarea
+                                style={{...styles.textarea, minHeight: 140, fontFamily: 'var(--body)', fontSize: 13}}
+                                value={noteDraft}
+                                onChange={(e) => setNoteDraft(e.target.value)}
+                                placeholder="Skriv din note, tjekliste eller procedure her…&#10;&#10;Fx:&#10;1. Tjek revisor-mappe på drevet&#10;2. Ring til Bent på 12345678&#10;3. Husk lager-optælling pr. 31/12"
+                                autoFocus
+                              />
+                              <div style={{display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end'}}>
+                                <button onClick={() => { setEditingNoteForTask(null); setNoteDraft(''); }} style={styles.ghostBtn}>
+                                  Annullér
+                                </button>
+                                <button onClick={() => { onSaveTaskNote(t.id, noteDraft); setEditingNoteForTask(null); setNoteDraft(''); }} style={styles.primaryBtn}>
+                                  Gem note
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              {hasNote ? (
+                                <div style={styles.yearwheelNoteText}>{t.note}</div>
+                              ) : (
+                                <div style={styles.yearwheelNoteEmpty}>
+                                  Ingen note endnu. Tilføj en tjekliste, procedure eller arbejdsbeskrivelse.
+                                </div>
+                              )}
+                              {isAdmin && (
+                                <div style={{marginTop: 10, display: 'flex', gap: 8}}>
+                                  <button onClick={() => { setEditingNoteForTask(t.id); setNoteDraft(t.note || ''); }} style={styles.ghostBtn}>
+                                    <Icon name="edit" size={12} /> {hasNote ? 'Rediger note' : 'Skriv note'}
+                                  </button>
+                                  {hasNote && (
+                                    <button onClick={() => { if (confirm('Slet noten?')) onSaveTaskNote(t.id, ''); }} style={{...styles.ghostBtn, color: 'var(--red)'}}>
+                                      <Icon name="trash" size={12} /> Slet note
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                              {hasNote && t.noteUpdatedAt && (
+                                <div style={{fontSize: 11, color: 'var(--ink-faint)', marginTop: 8, fontStyle: 'italic'}}>
+                                  Sidst opdateret {new Date(t.noteUpdatedAt).toLocaleDateString('da-DK', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                  {t.noteUpdatedBy && ` af ${t.noteUpdatedBy}`}
+                                </div>
+                              )}
+                            </>
+                          )}
                         </div>
                       )}
                     </div>
@@ -3264,6 +3344,11 @@
       yearwheelDetailHead: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, paddingBottom: 12, borderBottom: '1px solid var(--line)' },
       yearwheelMonthTitle: { fontFamily: 'var(--display)', fontSize: 24, fontWeight: 400, lineHeight: 1.1 },
       yearwheelTaskList: { display: 'flex', flexDirection: 'column', gap: 8 },
+      yearwheelTaskWrapper: { display: 'flex', flexDirection: 'column' },
+      yearwheelNoteSection: { padding: '12px 14px', marginTop: -1, background: 'var(--bg)', border: '1px solid var(--line)', borderTop: 'none', borderBottomLeftRadius: 4, borderBottomRightRadius: 4 },
+      yearwheelNoteText: { fontSize: 13, color: 'var(--ink)', whiteSpace: 'pre-wrap', lineHeight: 1.5, fontFamily: 'var(--body)' },
+      yearwheelNoteEmpty: { fontSize: 12, color: 'var(--ink-faint)', fontStyle: 'italic' },
+      yearwheelNoteIndicator: { fontSize: 11, marginLeft: 2 },
       yearwheelTask: { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 4 },
       yearwheelTaskDone: { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 4, opacity: 0.6 },
       yearwheelCheck: { width: 20, height: 20, borderRadius: 4, border: '1.5px solid var(--line)', background: 'transparent', flexShrink: 0, cursor: 'pointer', marginTop: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' },
