@@ -82,7 +82,7 @@
   </script>
 
   <script type="text/babel" data-presets="react" data-type="module">
-    const { useState, useEffect, useMemo, useCallback, Fragment } = React;
+    const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 
     // Wait for Firebase to be ready before rendering
     function App() {
@@ -131,7 +131,14 @@
       const [showNewDeptTask, setShowNewDeptTask] = useState(null); // dept id when open
       const [showNewUser, setShowNewUser] = useState(false);
       const [showChangePassword, setShowChangePassword] = useState(false);
+      const [showNewYearwheelTask, setShowNewYearwheelTask] = useState(null);
+      const [editYearwheelTask, setEditYearwheelTask] = useState(null);
+      const [showYearwheelAccess, setShowYearwheelAccess] = useState(false);
       const [selectedTask, setSelectedTask] = useState(null);
+      const [yearwheelTasks, setYearwheelTasks] = useState([]);
+      const [yearwheelChecks, setYearwheelChecks] = useState({});
+      const [yearwheelAccess, setYearwheelAccess] = useState({ userIds: [] });
+      const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
       const [searchQuery, setSearchQuery] = useState('');
       const [filterStatus, setFilterStatus] = useState('all');
 
@@ -218,6 +225,28 @@
           ));
         });
 
+        // Yearwheel tasks
+        unsubs.push(fns.onSnapshot(
+          fns.collection(db, 'platform_yearwheel_tasks'),
+          (snap) => setYearwheelTasks(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+        ));
+
+        // Yearwheel checks (one doc per year)
+        unsubs.push(fns.onSnapshot(
+          fns.collection(db, 'platform_yearwheel_checks'),
+          (snap) => {
+            const map = {};
+            snap.docs.forEach(d => { map[d.id] = d.data().completed || {}; });
+            setYearwheelChecks(map);
+          }
+        ));
+
+        // Yearwheel access settings
+        unsubs.push(fns.onSnapshot(
+          fns.doc(db, 'platform_settings', 'yearwheel_access'),
+          (snap) => setYearwheelAccess(snap.exists() ? snap.data() : { userIds: [] })
+        ));
+
         return () => unsubs.forEach(u => u());
       }, [userProfile?.id]);
 
@@ -303,7 +332,7 @@
         } catch (e) { alert('Fejl: ' + e.message); }
       };
 
-      const addComment = async (taskId, text) => {
+      const addComment = async (taskId, text, mentions) => {
         const trimmed = text.trim();
         if (!trimmed) return;
         try {
@@ -313,6 +342,7 @@
             id: Date.now().toString(),
             author: userProfile.name, authorId: userProfile.id,
             text: trimmed, createdAt: new Date().toISOString(),
+            mentions: mentions || [],
           };
           if (snap.exists()) {
             await fns.updateDoc(ref, { items: fns.arrayUnion(newItem) });
@@ -396,6 +426,130 @@
         } catch (e) { alert('Fejl: ' + e.message); }
       };
 
+      // ---- Yearwheel handlers ----
+      const createYearwheelTask = async (data) => {
+        try {
+          await fns.addDoc(fns.collection(db, 'platform_yearwheel_tasks'), {
+            ...data,
+            createdBy: userProfile.id, createdByName: userProfile.name,
+            createdAt: new Date().toISOString(),
+          });
+          setShowNewYearwheelTask(null);
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      const updateYearwheelTask = async (id, data) => {
+        try {
+          await fns.updateDoc(fns.doc(db, 'platform_yearwheel_tasks', id), {
+            ...data,
+            updatedAt: new Date().toISOString(),
+            updatedBy: userProfile.name,
+          });
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      const deleteYearwheelTask = async (id) => {
+        if (!confirm('Slet denne opgave fra årshjulet?')) return;
+        try { await fns.deleteDoc(fns.doc(db, 'platform_yearwheel_tasks', id)); }
+        catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      const toggleYearwheelCheck = async (taskId, year) => {
+        try {
+          const ref = fns.doc(db, 'platform_yearwheel_checks', String(year));
+          const snap = await fns.getDoc(ref);
+          const completed = snap.exists() ? (snap.data().completed || {}) : {};
+          if (completed[taskId]) {
+            delete completed[taskId];
+          } else {
+            completed[taskId] = {
+              by: userProfile.name,
+              byId: userProfile.id,
+              at: new Date().toISOString(),
+            };
+          }
+          if (snap.exists()) {
+            await fns.updateDoc(ref, { completed });
+          } else {
+            await fns.setDoc(ref, { completed, year });
+          }
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      const updateYearwheelAccess = async (userIds) => {
+        try {
+          await fns.setDoc(fns.doc(db, 'platform_settings', 'yearwheel_access'), { userIds });
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      const seedYearwheelDefaults = async () => {
+        if (!confirm('Indlæs standardopgaverne for en tandlægeklinik? Du kan altid redigere eller slette dem bagefter.')) return;
+        const defaults = [
+          { month: 1, title: 'Årsafslutning og send materiale til revisor', category: 'Økonomi' },
+          { month: 1, title: 'Indberet restbetalinger og opgør lager', category: 'Økonomi' },
+          { month: 1, title: 'Planlæg årets ferie og book sommervikar', category: 'Personale' },
+          { month: 1, title: 'Tjek at autoklave/sterilisator-validering er aktuel', category: 'Lovpligtigt' },
+          { month: 2, title: 'Følg op på regnskab og forbered årsrapport', category: 'Økonomi' },
+          { month: 2, title: 'Gennemgå utilsigtede hændelser fra året før (DPSD)', category: 'Lovpligtigt' },
+          { month: 2, title: 'Planlæg medarbejderudviklingssamtaler', category: 'Personale' },
+          { month: 3, title: 'Afhold MUS-samtaler', category: 'Personale' },
+          { month: 3, title: 'Kontrollér personalets autorisationer, HLR og strålebeskyttelseskurser', category: 'Lovpligtigt' },
+          { month: 3, title: 'Gennemgå hygiejneinstruks (NIR)', category: 'Hygiejne' },
+          { month: 4, title: 'Servicetjek af røntgenudstyr og stråleafskærmning', category: 'Udstyr' },
+          { month: 4, title: 'Forbered momsindberetning hvis relevant', category: 'Økonomi' },
+          { month: 4, title: 'Kig på kompetenceudvikling og kursusbudget', category: 'Personale' },
+          { month: 5, title: 'Bekræft sommerferieplan og vikardækning', category: 'Personale' },
+          { month: 5, title: 'Gennemgå arbejdsmiljø/APV hvis den er forfalden', category: 'Lovpligtigt' },
+          { month: 5, title: 'Tjek serviceaftaler på unit og kompressor', category: 'Udstyr' },
+          { month: 6, title: 'Halvårsstatus på økonomi', category: 'Økonomi' },
+          { month: 6, title: 'Meld sommerens bemanding og åbningstider ud til patienter', category: 'Personale' },
+          { month: 6, title: 'Kontrollér beredskab (nødmedicin, udløbsdatoer)', category: 'Lovpligtigt' },
+          { month: 7, title: 'Sørg for at akut-/vagtinfo er opdateret', category: 'Personale' },
+          { month: 8, title: 'Gennemgå lager og bestil til efteråret', category: 'Udstyr' },
+          { month: 8, title: 'Planlæg efterårets kurser og personaledage', category: 'Personale' },
+          { month: 8, title: 'Opstart efter ferie - tjek systemer', category: 'Personale' },
+          { month: 9, title: 'Servicetjek af klinisk udstyr', category: 'Udstyr' },
+          { month: 9, title: 'Følg op på utilsigtede hændelser og hygiejneaudit', category: 'Lovpligtigt' },
+          { month: 9, title: 'Start planlægning af næste års budget', category: 'Økonomi' },
+          { month: 10, title: 'Budgetlægning for kommende år', category: 'Økonomi' },
+          { month: 10, title: 'Forbered medarbejdersamtaler og lønforhandling', category: 'Personale' },
+          { month: 10, title: 'Kontrollér lovpligtige eftersyn (el, brand, autoklave)', category: 'Lovpligtigt' },
+          { month: 11, title: 'Planlæg juleferie og vagtdækning', category: 'Personale' },
+          { month: 11, title: 'Afslut lønforhandlinger', category: 'Personale' },
+          { month: 11, title: 'Bestil varer inden årsskiftet og opgør lager', category: 'Økonomi' },
+          { month: 12, title: 'Forbered regnskabsafslutning og lageroptælling pr. 31/12', category: 'Økonomi' },
+          { month: 12, title: 'Meld åbningstider i julen ud', category: 'Personale' },
+          { month: 12, title: 'Arkivér årets dokumentation (UTH, hygiejne, udstyr)', category: 'Lovpligtigt' },
+        ];
+        try {
+          for (const t of defaults) {
+            await fns.addDoc(fns.collection(db, 'platform_yearwheel_tasks'), {
+              ...t,
+              createdBy: userProfile.id, createdByName: userProfile.name,
+              createdAt: new Date().toISOString(),
+            });
+          }
+        } catch (e) { alert('Fejl: ' + e.message); }
+      };
+
+      // Track when user last viewed each tab (for mention notifications)
+      const markViewSeen = async (viewKey) => {
+        if (!userProfile) return;
+        try {
+          const ref = fns.doc(db, 'platform_users', userProfile.id);
+          const updates = {};
+          updates[`lastSeen_${viewKey}`] = new Date().toISOString();
+          await fns.updateDoc(ref, updates);
+        } catch (e) { /* silently fail - non critical */ }
+      };
+
+      // Auto-mark current view as seen when user switches to it
+      useEffect(() => {
+        if (!userProfile) return;
+        const key = view === 'tasks' ? 'tasks' : (view === 'reception' || view === 'kontor' || view === 'steril') ? view : null;
+        if (key) markViewSeen(key);
+      }, [view, userProfile?.id]);
+
       const deleteDeptTask = async (deptId, id) => {
         if (!confirm('Slet denne opgave?')) return;
         try {
@@ -404,7 +558,7 @@
         } catch (e) { alert('Fejl: ' + e.message); }
       };
 
-      const addDeptNote = async (deptId, text, urgent) => {
+      const addDeptNote = async (deptId, text, urgent, mentions) => {
         const trimmed = text.trim();
         if (!trimmed) return;
         try {
@@ -413,6 +567,7 @@
             text: trimmed, urgent: !!urgent,
             author: userProfile.name, authorId: userProfile.id,
             acknowledged: [],
+            mentions: mentions || [],
             createdAt: new Date().toISOString(),
           });
         } catch (e) { alert('Fejl: ' + e.message); }
@@ -447,6 +602,9 @@
 
       const isAdmin = userProfile.role === 'leder';
 
+      // Yearwheel access: admin always has access, plus explicitly granted users
+      const hasYearwheelAccess = isAdmin || (yearwheelAccess.userIds || []).includes(userProfile.id);
+
       // Helper: check if a task is visible to the current user (based on visibility settings)
       const isTaskVisible = (task) => {
         const visibility = task.visibility || 'all';
@@ -463,6 +621,36 @@
 
       // Visible tasks for sidebar count
       const visibleMainTasks = tasks.filter(isTaskVisible);
+
+      // Compute mention counts (unread mentions per view)
+      const mentionCounts = { tasks: 0 };
+      DEPARTMENTS.forEach(d => { mentionCounts[d.id] = 0; });
+
+      // Mentions in task comments → counts toward 'tasks' view
+      const tasksLastSeen = userProfile[`lastSeen_tasks`] ? new Date(userProfile[`lastSeen_tasks`]) : new Date(0);
+      Object.entries(comments).forEach(([taskId, items]) => {
+        const task = tasks.find(t => t.id === taskId);
+        if (!task || !isTaskVisible(task)) return;
+        (items || []).forEach(c => {
+          if (c.authorId === userProfile.id) return; // skip own
+          const mentioned = (c.mentions || []).includes(userProfile.id);
+          if (mentioned && new Date(c.createdAt) > tasksLastSeen) {
+            mentionCounts.tasks++;
+          }
+        });
+      });
+
+      // Mentions in dept notes → counts toward that dept's view
+      DEPARTMENTS.forEach(dept => {
+        const lastSeen = userProfile[`lastSeen_${dept.id}`] ? new Date(userProfile[`lastSeen_${dept.id}`]) : new Date(0);
+        (deptNotes[dept.id] || []).forEach(n => {
+          if (n.authorId === userProfile.id) return;
+          const mentioned = (n.mentions || []).includes(userProfile.id);
+          if (mentioned && new Date(n.createdAt) > lastSeen) {
+            mentionCounts[dept.id]++;
+          }
+        });
+      });
 
       // Compute badge counts for each department (only count visible tasks)
       const deptBadges = {};
@@ -501,7 +689,9 @@
                   docCount={documents.length}
                   departments={DEPARTMENTS}
                   deptBadges={deptBadges}
+                  mentionCounts={mentionCounts}
                   isAdmin={isAdmin}
+                  hasYearwheelAccess={hasYearwheelAccess}
                   onChangePassword={() => { setShowChangePassword(true); setSidebarOpen(false); }}
                   isMobile={true}
                 />
@@ -518,7 +708,9 @@
               docCount={documents.length}
               departments={DEPARTMENTS}
               deptBadges={deptBadges}
+              mentionCounts={mentionCounts}
               isAdmin={isAdmin}
+              hasYearwheelAccess={hasYearwheelAccess}
               onChangePassword={() => setShowChangePassword(true)}
             />
           )}
@@ -549,6 +741,21 @@
                 isMobile={isMobile} />
             ))}
             {view === 'overview' && <OverviewView tasks={tasks} users={users} isMobile={isMobile} />}
+            {view === 'yearwheel' && hasYearwheelAccess && <YearwheelView
+              tasks={yearwheelTasks}
+              checks={yearwheelChecks}
+              users={users}
+              isAdmin={isAdmin}
+              userProfile={userProfile}
+              selectedMonth={selectedMonth}
+              setSelectedMonth={setSelectedMonth}
+              onToggleCheck={toggleYearwheelCheck}
+              onNewTask={(month) => setShowNewYearwheelTask(month)}
+              onEditTask={setEditYearwheelTask}
+              onDeleteTask={deleteYearwheelTask}
+              onManageAccess={() => setShowYearwheelAccess(true)}
+              onSeedDefaults={seedYearwheelDefaults}
+              isMobile={isMobile} />}
             {view === 'team' && <TeamView users={users} tasks={tasks} userProfile={userProfile}
               onNewUser={() => setShowNewUser(true)} onUpdateRole={updateUserRole} isAdmin={isAdmin} />}
           </main>
@@ -564,6 +771,21 @@
             onCreate={(data) => createDeptTask(showNewDeptTask, data)} />}
           {showNewUser && <NewUserModal onClose={() => setShowNewUser(false)} onCreate={createNewUser} />}
           {showChangePassword && <ChangePasswordModal authUser={authUser} onClose={() => setShowChangePassword(false)} />}
+          {showNewYearwheelTask && <YearwheelTaskModal
+            month={showNewYearwheelTask}
+            onClose={() => setShowNewYearwheelTask(null)}
+            onSave={(data) => createYearwheelTask(data)} />}
+          {editYearwheelTask && <YearwheelTaskModal
+            task={editYearwheelTask}
+            month={editYearwheelTask.month}
+            onClose={() => setEditYearwheelTask(null)}
+            onSave={(data) => { updateYearwheelTask(editYearwheelTask.id, data); setEditYearwheelTask(null); }} />}
+          {showYearwheelAccess && <YearwheelAccessModal
+            users={users}
+            currentAccess={yearwheelAccess.userIds || []}
+            adminUserId={userProfile.id}
+            onClose={() => setShowYearwheelAccess(false)}
+            onSave={(userIds) => { updateYearwheelAccess(userIds); setShowYearwheelAccess(false); }} />}
           {selectedTask && <TaskDetailModal task={tasks.find(t => t.id === selectedTask)} users={users}
             userProfile={userProfile} comments={comments[selectedTask] || []}
             onClose={() => setSelectedTask(null)} onStatusChange={updateTaskStatus}
@@ -598,6 +820,188 @@
         <div style={styles.loadingScreen}>
           <div style={styles.loadingDot}></div>
           <span style={styles.loadingText}>{text || 'Indlæser…'}</span>
+        </div>
+      );
+    }
+
+    // Helper: extract mentioned user IDs from text + users list
+    function extractMentions(text, users) {
+      const mentions = [];
+      (users || []).forEach(u => {
+        // Check both full name and first name
+        const firstName = u.name.split(' ')[0];
+        const patterns = [u.name, firstName];
+        for (const p of patterns) {
+          const regex = new RegExp(`@${p.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'i');
+          if (regex.test(text) && !mentions.includes(u.id)) {
+            mentions.push(u.id);
+            break;
+          }
+        }
+      });
+      return mentions;
+    }
+
+    // Helper: render text with @mentions highlighted
+    function renderTextWithMentions(text, users) {
+      if (!text) return null;
+      // Split text by @mentions
+      const parts = [];
+      const allNames = (users || []).flatMap(u => [u.name, u.name.split(' ')[0]]).filter(Boolean);
+      // Sort longer names first so we match "Anna Berg" before "Anna"
+      allNames.sort((a, b) => b.length - a.length);
+
+      let remaining = text;
+      let key = 0;
+      while (remaining.length > 0) {
+        let matched = false;
+        for (const name of allNames) {
+          const idx = remaining.toLowerCase().indexOf('@' + name.toLowerCase());
+          if (idx === 0) {
+            parts.push(<span key={key++} style={styles.mentionTag}>@{name}</span>);
+            remaining = remaining.slice(name.length + 1);
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
+          // Find next @ or take rest
+          const nextAt = remaining.indexOf('@', 1);
+          if (nextAt === -1) {
+            parts.push(<span key={key++}>{remaining}</span>);
+            remaining = '';
+          } else {
+            parts.push(<span key={key++}>{remaining.slice(0, nextAt)}</span>);
+            remaining = remaining.slice(nextAt);
+          }
+        }
+      }
+      return parts;
+    }
+
+    function MentionInput({ value, onChange, users, currentUserId, placeholder, rows, autoFocus, onEnter, multiline, inputStyle }) {
+      const [showPicker, setShowPicker] = useState(false);
+      const [filter, setFilter] = useState('');
+      const [cursorPos, setCursorPos] = useState(0);
+      const [highlightIdx, setHighlightIdx] = useState(0);
+      const inputRef = useRef(null);
+
+      const selectableUsers = (users || []).filter(u => u.id !== currentUserId);
+      const filtered = selectableUsers.filter(u =>
+        u.name.toLowerCase().includes(filter.toLowerCase())
+      );
+
+      const handleChange = (e) => {
+        const newValue = e.target.value;
+        const pos = e.target.selectionStart;
+        onChange(newValue);
+        setCursorPos(pos);
+        // Check if we should show picker
+        const textBeforeCursor = newValue.slice(0, pos);
+        const match = textBeforeCursor.match(/@([\w\sæøåÆØÅ]*)$/);
+        if (match) {
+          setShowPicker(true);
+          setFilter(match[1]);
+          setHighlightIdx(0);
+        } else {
+          setShowPicker(false);
+        }
+      };
+
+      const insertMention = (user) => {
+        const textBeforeCursor = value.slice(0, cursorPos);
+        const textAfterCursor = value.slice(cursorPos);
+        const newBefore = textBeforeCursor.replace(/@[\w\sæøåÆØÅ]*$/, `@${user.name.split(' ')[0]} `);
+        const newValue = newBefore + textAfterCursor;
+        onChange(newValue);
+        setShowPicker(false);
+        // Restore focus
+        setTimeout(() => {
+          if (inputRef.current) {
+            inputRef.current.focus();
+            const newPos = newBefore.length;
+            inputRef.current.setSelectionRange(newPos, newPos);
+          }
+        }, 0);
+      };
+
+      const openPickerExplicitly = () => {
+        const newValue = value + (value.endsWith(' ') || value === '' ? '@' : ' @');
+        onChange(newValue);
+        setShowPicker(true);
+        setFilter('');
+        setHighlightIdx(0);
+        setTimeout(() => {
+          if (inputRef.current) {
+            inputRef.current.focus();
+            inputRef.current.setSelectionRange(newValue.length, newValue.length);
+            setCursorPos(newValue.length);
+          }
+        }, 0);
+      };
+
+      const handleKeyDown = (e) => {
+        if (showPicker && filtered.length > 0) {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setHighlightIdx((i) => Math.min(i + 1, filtered.length - 1));
+            return;
+          }
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setHighlightIdx((i) => Math.max(i - 1, 0));
+            return;
+          }
+          if (e.key === 'Enter' || e.key === 'Tab') {
+            e.preventDefault();
+            insertMention(filtered[highlightIdx]);
+            return;
+          }
+          if (e.key === 'Escape') {
+            setShowPicker(false);
+            return;
+          }
+        }
+        if (!showPicker && e.key === 'Enter' && !multiline && onEnter) {
+          e.preventDefault();
+          onEnter();
+        }
+      };
+
+      const InputTag = multiline ? 'textarea' : 'input';
+
+      return (
+        <div style={{position: 'relative', width: '100%'}}>
+          <div style={{display: 'flex', gap: 6, alignItems: 'flex-start'}}>
+            <InputTag
+              ref={inputRef}
+              style={inputStyle || (multiline ? styles.textarea : styles.input)}
+              value={value}
+              onChange={handleChange}
+              onKeyDown={handleKeyDown}
+              placeholder={placeholder}
+              rows={rows}
+              autoFocus={autoFocus}
+            />
+            <button type="button" onClick={openPickerExplicitly} style={styles.mentionIconBtn} title="Tag en person (@)">
+              <Icon name="at" size={15} />
+            </button>
+          </div>
+          {showPicker && filtered.length > 0 && (
+            <div style={styles.mentionPicker}>
+              {filtered.slice(0, 6).map((u, i) => (
+                <button key={u.id} type="button"
+                  onClick={() => insertMention(u)}
+                  style={i === highlightIdx ? styles.mentionItemActive : styles.mentionItem}>
+                  <div style={styles.mentionAvatar}>{u.name[0].toUpperCase()}</div>
+                  <div style={{flex: 1, textAlign: 'left'}}>
+                    <div style={{fontSize: 13, fontWeight: 500}}>{u.name}</div>
+                    <div style={{fontSize: 11, color: 'var(--ink-faint)'}}>@{u.name.split(' ')[0]}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       );
     }
@@ -698,17 +1102,29 @@
       );
     }
 
-    function Sidebar({ userProfile, view, setView, onLogout, taskCount, docCount, departments, deptBadges, isAdmin, onChangePassword, isMobile }) {
+    function Sidebar({ userProfile, view, setView, onLogout, taskCount, docCount, departments, deptBadges, mentionCounts, isAdmin, hasYearwheelAccess, onChangePassword, isMobile }) {
       const [menuOpen, setMenuOpen] = useState(false);
       const topItems = [
         { id: 'tasks', label: 'Opgaver', icon: 'check', badge: taskCount },
         { id: 'documents', label: 'Dokumenter', icon: 'file', badge: docCount },
       ];
       const deptIcons = { reception: 'bell', kontor: 'briefcase', steril: 'shield' };
-      const bottomItems = [
+      const adminItems = [
+        ...(hasYearwheelAccess ? [{ id: 'yearwheel', label: 'Årshjul', icon: 'wheel' }] : []),
         { id: 'overview', label: 'Overblik', icon: 'chart' },
         { id: 'team', label: 'Team', icon: 'users' },
       ];
+
+      const renderBadges = (count, mentions, active) => {
+        return (
+          <span style={{display: 'inline-flex', gap: 4, marginLeft: 'auto'}}>
+            {mentions > 0 && (
+              <span style={styles.mentionBadge} title={`${mentions} ny tagging`}>@{mentions}</span>
+            )}
+            {count > 0 && <span style={active ? styles.navBadgeActive : styles.navBadge}>{count}</span>}
+          </span>
+        );
+      };
 
       return (
         <aside style={isMobile ? styles.sidebarMobile : styles.sidebar}>
@@ -719,12 +1135,13 @@
           <nav style={styles.nav}>
             {topItems.map(item => {
               const active = view === item.id;
+              const mentions = (mentionCounts && mentionCounts[item.id]) || 0;
               return (
                 <button key={item.id} onClick={() => setView(item.id)}
                   style={active ? styles.navItemActive : styles.navItem}>
                   <Icon name={item.icon} size={17} />
                   <span>{item.label}</span>
-                  {item.badge > 0 && <span style={active ? styles.navBadgeActive : styles.navBadge}>{item.badge}</span>}
+                  {renderBadges(item.badge, mentions, active)}
                 </button>
               );
             })}
@@ -733,18 +1150,19 @@
             {departments.map(dept => {
               const active = view === dept.id;
               const badge = deptBadges[dept.id] || 0;
+              const mentions = (mentionCounts && mentionCounts[dept.id]) || 0;
               return (
                 <button key={dept.id} onClick={() => setView(dept.id)}
                   style={active ? styles.navItemActive : styles.navItem}>
                   <Icon name={deptIcons[dept.id] || 'circle'} size={17} />
                   <span>{dept.label}</span>
-                  {badge > 0 && <span style={active ? styles.navBadgeActive : styles.navBadge}>{badge}</span>}
+                  {renderBadges(badge, mentions, active)}
                 </button>
               );
             })}
 
             <div style={styles.navDivider}>Administration</div>
-            {bottomItems.map(item => {
+            {adminItems.map(item => {
               const active = view === item.id;
               return (
                 <button key={item.id} onClick={() => setView(item.id)}
@@ -785,6 +1203,7 @@
         documents: { h: 'Dokumenter', s: 'Retningslinjer, uddelegeringer og delte filer.' },
         overview: { h: 'Overblik', s: 'Status og fremdrift på tværs af teamet.' },
         team: { h: 'Team', s: 'Alle på platformen og deres aktivitet.' },
+        yearwheel: { h: 'Årshjul', s: 'Årets tilbagevendende administrative opgaver.' },
       };
       (departments || []).forEach(dept => {
         titles[dept.id] = { h: dept.label, s: `${dept.label}-afdelingens egne opgaver og overlevering mellem vagter.` };
@@ -1017,7 +1436,8 @@
 
       const submitNote = () => {
         if (!noteText.trim()) return;
-        onAddNote(noteText, urgent);
+        const mentions = extractMentions(noteText, users);
+        onAddNote(noteText, urgent, mentions);
         setNoteText('');
         setUrgent(false);
       };
@@ -1134,10 +1554,16 @@
               </div>
 
               <div style={styles.handoverInput}>
-                <textarea style={{...styles.textarea, minHeight: 70}} value={noteText}
-                  onChange={(e) => setNoteText(e.target.value)}
-                  placeholder={`Skriv en besked til næste vagt i ${dept.label.toLowerCase()}…`}
-                  rows={3} />
+                <MentionInput
+                  value={noteText}
+                  onChange={setNoteText}
+                  users={users}
+                  currentUserId={userProfile.id}
+                  placeholder={`Skriv en besked til næste vagt i ${dept.label.toLowerCase()}… (brug @ for at tagge)`}
+                  rows={3}
+                  multiline
+                  inputStyle={{...styles.textarea, minHeight: 70}}
+                />
                 <div style={styles.handoverInputRow}>
                   <label style={styles.urgentToggle}>
                     <input type="checkbox" checked={urgent} onChange={(e) => setUrgent(e.target.checked)} />
@@ -1179,7 +1605,7 @@
                                 onCancel={() => setEditingNoteId(null)} />
                             ) : (
                               <>
-                                <div style={styles.handoverNoteText}>{n.text}</div>
+                                <div style={styles.handoverNoteText}>{renderTextWithMentions(n.text, users)}</div>
                                 <div style={styles.handoverNoteFoot}>
                                   <div style={styles.handoverAvatar}>{n.author[0].toUpperCase()}</div>
                                   <div>
@@ -1340,6 +1766,263 @@
           <div style={styles.modalActions}>
             <button onClick={onClose} style={styles.ghostBtn}>Annullér</button>
             <button onClick={submit} style={styles.primaryBtn} disabled={!title.trim()}>Gem ændringer</button>
+          </div>
+        </Modal>
+      );
+    }
+
+    function YearwheelView({ tasks, checks, users, isAdmin, userProfile, selectedMonth, setSelectedMonth, onToggleCheck, onNewTask, onEditTask, onDeleteTask, onManageAccess, onSeedDefaults, isMobile }) {
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'Maj', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dec'];
+      const monthNamesFull = ['Januar', 'Februar', 'Marts', 'April', 'Maj', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'December'];
+      const currentYear = new Date().getFullYear();
+      const currentChecks = checks[String(currentYear)] || {};
+
+      // Compute per-month progress
+      const monthStats = {};
+      for (let m = 1; m <= 12; m++) {
+        const monthTasks = tasks.filter(t => t.month === m);
+        const completedCount = monthTasks.filter(t => currentChecks[t.id]).length;
+        monthStats[m] = { total: monthTasks.length, completed: completedCount };
+      }
+
+      const totalTasks = tasks.length;
+      const totalCompleted = tasks.filter(t => currentChecks[t.id]).length;
+      const totalPct = totalTasks ? Math.round((totalCompleted / totalTasks) * 100) : 0;
+
+      const selectedMonthTasks = tasks.filter(t => t.month === selectedMonth)
+        .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+
+      // SVG geometry for the wheel
+      const cx = 180, cy = 180, rOuter = 140, rInner = 70;
+      const segments = [];
+      for (let m = 1; m <= 12; m++) {
+        const startAngle = ((m - 1) * 30 - 90) * Math.PI / 180; // -90 so jan starts at top
+        const endAngle = (m * 30 - 90) * Math.PI / 180;
+        const x1o = cx + rOuter * Math.cos(startAngle);
+        const y1o = cy + rOuter * Math.sin(startAngle);
+        const x2o = cx + rOuter * Math.cos(endAngle);
+        const y2o = cy + rOuter * Math.sin(endAngle);
+        const x1i = cx + rInner * Math.cos(endAngle);
+        const y1i = cy + rInner * Math.sin(endAngle);
+        const x2i = cx + rInner * Math.cos(startAngle);
+        const y2i = cy + rInner * Math.sin(startAngle);
+        const labelAngle = ((m - 1) * 30 + 15 - 90) * Math.PI / 180;
+        const labelR = (rOuter + rInner) / 2;
+        const labelX = cx + labelR * Math.cos(labelAngle);
+        const labelY = cy + labelR * Math.sin(labelAngle);
+
+        const { total, completed } = monthStats[m];
+        let fill = 'var(--surface)';
+        let strokeColor = 'var(--line)';
+        let textColor = 'var(--ink)';
+        let subTextColor = 'var(--ink-soft)';
+        if (total > 0) {
+          if (completed === total) { fill = '#C0DD97'; textColor = '#27500A'; subTextColor = '#27500A'; }
+          else if (completed > 0) { fill = '#FAC775'; textColor = '#633806'; subTextColor = '#633806'; }
+        }
+        if (m === selectedMonth) {
+          fill = 'var(--ink)';
+          textColor = '#fff';
+          subTextColor = '#fff';
+          strokeColor = 'var(--ink)';
+        }
+
+        const path = `M ${x1o},${y1o} A ${rOuter},${rOuter} 0 0,1 ${x2o},${y2o} L ${x1i},${y1i} A ${rInner},${rInner} 0 0,0 ${x2i},${y2i} Z`;
+        segments.push({
+          m, path, fill, strokeColor, textColor, subTextColor,
+          labelX, labelY,
+          label: monthNames[m - 1],
+          countLabel: total === 0 ? '–' : (completed === total ? `${completed}/${total} ✓` : `${completed}/${total}`),
+        });
+      }
+
+      const categoryColors = {
+        'Personale': 'var(--warm)',
+        'Økonomi': 'var(--green)',
+        'Lovpligtigt': 'var(--red)',
+        'Udstyr': 'var(--ink-soft)',
+        'Hygiejne': 'var(--red)',
+      };
+
+      return (
+        <div style={styles.viewBody}>
+          <div style={styles.yearwheelToolbar}>
+            <div>
+              <div style={styles.headerEyebrow}>Status {currentYear}</div>
+              <div style={styles.yearwheelStatTitle}>{totalCompleted} af {totalTasks} opgaver — {totalPct}%</div>
+            </div>
+            <div style={{flex: 1}}></div>
+            {isAdmin && tasks.length === 0 && (
+              <button onClick={onSeedDefaults} style={styles.primaryBtn}>
+                <Icon name="plus" size={14} /> Indlæs standardopgaver
+              </button>
+            )}
+            {isAdmin && (
+              <button onClick={onManageAccess} style={styles.ghostBtn}>
+                <Icon name="users" size={14} /> Administrer adgang
+              </button>
+            )}
+          </div>
+
+          <div style={isMobile ? styles.yearwheelLayoutMobile : styles.yearwheelLayout}>
+
+            <div style={styles.yearwheelWheel}>
+              <svg viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg" style={{width: '100%', maxWidth: 360, display: 'block', margin: '0 auto', cursor: 'pointer'}}>
+                {segments.map(seg => (
+                  <g key={seg.m} onClick={() => setSelectedMonth(seg.m)}>
+                    <path d={seg.path} fill={seg.fill} stroke={seg.strokeColor} strokeWidth="0.5" />
+                    <text x={seg.labelX} y={seg.labelY - 3} fontFamily="var(--body)" fontSize="11" fontWeight="600" fill={seg.textColor} textAnchor="middle">{seg.label}</text>
+                    <text x={seg.labelX} y={seg.labelY + 11} fontFamily="var(--body)" fontSize="9" fill={seg.subTextColor} textAnchor="middle">{seg.countLabel}</text>
+                  </g>
+                ))}
+                <circle cx={cx} cy={cy} r={rInner} fill="var(--surface)" stroke="var(--line)" strokeWidth="0.5" pointerEvents="none"/>
+                <text x={cx} y={cy - 12} fontFamily="var(--body)" fontSize="10" fill="var(--ink-soft)" textAnchor="middle" letterSpacing="0.15em" pointerEvents="none">{currentYear}</text>
+                <text x={cx} y={cy + 12} fontFamily="var(--display)" fontSize="26" fontWeight="400" fill="var(--ink)" textAnchor="middle" pointerEvents="none">{totalPct}%</text>
+                <text x={cx} y={cy + 28} fontFamily="var(--body)" fontSize="9" fill="var(--ink-soft)" textAnchor="middle" pointerEvents="none">færdige</text>
+              </svg>
+              <div style={styles.yearwheelLegend}>
+                <span style={styles.yearwheelLegendItem}><span style={{...styles.yearwheelLegendDot, background: '#C0DD97'}}></span>Alle færdige</span>
+                <span style={styles.yearwheelLegendItem}><span style={{...styles.yearwheelLegendDot, background: '#FAC775'}}></span>Påbegyndt</span>
+                <span style={styles.yearwheelLegendItem}><span style={{...styles.yearwheelLegendDot, background: 'var(--surface)', border: '1px solid var(--line)'}}></span>Ikke startet</span>
+              </div>
+            </div>
+
+            <div style={styles.yearwheelDetail}>
+              <div style={styles.yearwheelDetailHead}>
+                <div>
+                  <div style={styles.yearwheelMonthTitle}>{monthNamesFull[selectedMonth - 1]}</div>
+                  <div style={{fontSize: 12, color: 'var(--ink-soft)'}}>
+                    {monthStats[selectedMonth].total === 0
+                      ? 'Ingen opgaver endnu'
+                      : `${monthStats[selectedMonth].completed} af ${monthStats[selectedMonth].total} klaret`}
+                  </div>
+                </div>
+                {isAdmin && (
+                  <button onClick={() => onNewTask(selectedMonth)} style={styles.primaryBtn}>
+                    <Icon name="plus" size={14} /> Ny opgave
+                  </button>
+                )}
+              </div>
+
+              <div style={styles.yearwheelTaskList}>
+                {selectedMonthTasks.length === 0 ? (
+                  <div style={styles.yearwheelEmpty}>
+                    Ingen opgaver i {monthNamesFull[selectedMonth - 1].toLowerCase()}.
+                    {isAdmin && ' Klik "Ny opgave" for at tilføje en.'}
+                  </div>
+                ) : selectedMonthTasks.map(t => {
+                  const check = currentChecks[t.id];
+                  const isDone = !!check;
+                  return (
+                    <div key={t.id} style={isDone ? styles.yearwheelTaskDone : styles.yearwheelTask}>
+                      <button onClick={() => onToggleCheck(t.id, currentYear)} style={isDone ? styles.yearwheelCheckDone : styles.yearwheelCheck} title={isDone ? 'Fjern markering' : 'Markér som klaret'}>
+                        {isDone && <Icon name="check" size={12} color="#fff" />}
+                      </button>
+                      <div style={{flex: 1, minWidth: 0}}>
+                        <div style={isDone ? styles.yearwheelTaskTitleDone : styles.yearwheelTaskTitle}>{t.title}</div>
+                        <div style={styles.yearwheelTaskMeta}>
+                          {t.category && (
+                            <span style={{...styles.yearwheelCategory, color: categoryColors[t.category] || 'var(--ink-soft)'}}>
+                              {t.category}
+                            </span>
+                          )}
+                          {isDone && <span>· ✓ {check.by} · {new Date(check.at).toLocaleDateString('da-DK', { day: 'numeric', month: 'short' })}</span>}
+                        </div>
+                      </div>
+                      {isAdmin && (
+                        <div style={{display: 'flex', gap: 4}}>
+                          <button onClick={() => onEditTask(t)} style={styles.miniBtn} title="Rediger"><Icon name="edit" size={12} /></button>
+                          <button onClick={() => onDeleteTask(t.id)} style={{...styles.miniBtn, color: 'var(--red)'}} title="Slet"><Icon name="trash" size={12} /></button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={styles.yearwheelHint}>
+                💡 Krydsede afkrydsninger nulstilles automatisk 1. januar hvert år.
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function YearwheelTaskModal({ task, month, onClose, onSave }) {
+      const [title, setTitle] = useState(task ? task.title : '');
+      const [category, setCategory] = useState(task ? (task.category || 'Personale') : 'Personale');
+      const [taskMonth, setTaskMonth] = useState(task ? task.month : month);
+      const monthNames = ['Januar', 'Februar', 'Marts', 'April', 'Maj', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'December'];
+      const categories = ['Personale', 'Økonomi', 'Lovpligtigt', 'Udstyr', 'Hygiejne'];
+
+      const submit = () => {
+        if (!title.trim()) return;
+        onSave({ title: title.trim(), category, month: taskMonth });
+      };
+
+      return (
+        <Modal onClose={onClose} title={task ? 'Rediger årshjul-opgave' : 'Ny årshjul-opgave'}>
+          <label style={styles.label}>Titel *</label>
+          <input style={styles.input} value={title} onChange={e => setTitle(e.target.value)} placeholder="fx Servicetjek af røntgenudstyr" autoFocus />
+
+          <label style={{...styles.label, marginTop: 18}}>Måned</label>
+          <select style={styles.input} value={taskMonth} onChange={e => setTaskMonth(Number(e.target.value))}>
+            {monthNames.map((n, i) => <option key={i + 1} value={i + 1}>{n}</option>)}
+          </select>
+
+          <label style={{...styles.label, marginTop: 18}}>Kategori</label>
+          <div style={styles.roleGroup}>
+            {categories.map(c => (
+              <button key={c} onClick={() => setCategory(c)} style={category === c ? styles.roleBtnActive : styles.roleBtn}>{c}</button>
+            ))}
+          </div>
+
+          <div style={styles.modalActions}>
+            <button onClick={onClose} style={styles.ghostBtn}>Annullér</button>
+            <button onClick={submit} style={styles.primaryBtn} disabled={!title.trim()}>{task ? 'Gem ændringer' : 'Tilføj opgave'}</button>
+          </div>
+        </Modal>
+      );
+    }
+
+    function YearwheelAccessModal({ users, currentAccess, adminUserId, onClose, onSave }) {
+      const [selected, setSelected] = useState(currentAccess);
+
+      const toggle = (userId) => {
+        setSelected(prev => prev.includes(userId)
+          ? prev.filter(id => id !== userId)
+          : [...prev, userId]);
+      };
+
+      // Don't show the admin themselves (they always have access)
+      const otherUsers = users.filter(u => u.id !== adminUserId);
+
+      return (
+        <Modal onClose={onClose} title="Hvem skal kunne se årshjulet?">
+          <div style={styles.helpText}>
+            Som admin har du altid adgang. Vælg hvilke medarbejdere der også skal kunne se og krydse opgaver af i årshjulet.
+          </div>
+          <div style={{...styles.specificList, marginTop: 16}}>
+            {otherUsers.length === 0 ? (
+              <div style={styles.empty}>Der er ikke andre brugere endnu.</div>
+            ) : otherUsers.map(u => {
+              const checked = selected.includes(u.id);
+              return (
+                <label key={u.id} style={checked ? styles.specificItemActive : styles.specificItem}>
+                  <input type="checkbox" checked={checked} onChange={() => toggle(u.id)} />
+                  <div style={styles.specificAvatar}>{u.name[0].toUpperCase()}</div>
+                  <div style={{flex: 1}}>
+                    <div style={{fontSize: 13, fontWeight: 500}}>{u.name}</div>
+                    <div style={{fontSize: 11, color: 'var(--ink-faint)'}}>{u.email}</div>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+          <div style={styles.modalActions}>
+            <button onClick={onClose} style={styles.ghostBtn}>Annullér</button>
+            <button onClick={() => onSave(selected)} style={styles.primaryBtn}>Gem adgang</button>
           </div>
         </Modal>
       );
@@ -1946,7 +2629,8 @@
 
       const send = () => {
         if (!comment.trim()) return;
-        onAddComment(task.id, comment);
+        const mentions = extractMentions(comment, users);
+        onAddComment(task.id, comment, mentions);
         setComment('');
       };
 
@@ -2065,13 +2749,20 @@
                           <strong>{c.author}</strong>
                           <span style={styles.commentDate}>{new Date(c.createdAt).toLocaleString('da-DK', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
                         </div>
-                        <div style={styles.commentText}>{c.text}</div>
+                        <div style={styles.commentText}>{renderTextWithMentions(c.text, users)}</div>
                       </div>
                     </div>
                   ))}
                 </div>
                 <div style={styles.commentInputRow}>
-                  <input style={{...styles.input, flex: 1, marginTop: 0}} value={comment} onChange={e => setComment(e.target.value)} placeholder="Skriv en kommentar…" onKeyDown={e => e.key === 'Enter' && send()} />
+                  <MentionInput
+                    value={comment}
+                    onChange={setComment}
+                    users={users}
+                    currentUserId={userProfile.id}
+                    placeholder="Skriv en kommentar… (brug @ for at tagge)"
+                    onEnter={send}
+                  />
                   <button onClick={send} style={styles.primaryBtn} disabled={!comment.trim()}>
                     <Icon name="send" size={15} />
                   </button>
@@ -2155,6 +2846,8 @@
         'chevron-down': <polyline points="6 9 12 15 18 9"/>,
         edit: <><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></>,
         menu: <><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></>,
+        at: <><circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94"/></>,
+        wheel: <><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="8"/><line x1="12" y1="16" x2="12" y2="22"/><line x1="2" y1="12" x2="8" y2="12"/><line x1="16" y1="12" x2="22" y2="12"/></>,
       };
       return <svg {...props}>{paths[name] || paths.circle}</svg>;
     }
@@ -2354,6 +3047,37 @@
       receptionTaskActions: { display: 'flex', gap: 4, flexShrink: 0 },
       inlinePriority: { color: 'var(--red)', marginRight: 6, fontSize: 14 },
       deadlineTag: { color: 'var(--warm)', fontWeight: 500 },
+      mentionTag: { color: 'var(--warm)', fontWeight: 600, background: 'rgba(196,98,42,0.1)', padding: '0 4px', borderRadius: 3 },
+      mentionBadge: { background: 'var(--warm)', color: 'white', fontSize: 11, fontWeight: 600, padding: '1px 6px', borderRadius: 10, display: 'inline-flex', alignItems: 'center' },
+      mentionIconBtn: { background: 'var(--bg)', border: '1px solid var(--line)', color: 'var(--ink-soft)', padding: '8px 10px', borderRadius: 3, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+      mentionPicker: { position: 'absolute', bottom: 'calc(100% + 4px)', left: 0, right: 0, background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 4, boxShadow: '0 -4px 16px -4px rgba(26,24,20,0.15)', zIndex: 100, overflow: 'hidden', maxHeight: 240, overflowY: 'auto' },
+      mentionItem: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', width: '100%', background: 'transparent', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--line-soft)' },
+      mentionItemActive: { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', width: '100%', background: 'rgba(196,98,42,0.08)', border: 'none', cursor: 'pointer', borderBottom: '1px solid var(--line-soft)' },
+      mentionAvatar: { width: 24, height: 24, borderRadius: '50%', background: 'var(--ink)', color: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, flexShrink: 0 },
+
+      // Yearwheel styles
+      yearwheelToolbar: { display: 'flex', alignItems: 'flex-end', gap: 16, marginBottom: 24, paddingBottom: 16, borderBottom: '1px solid var(--line)' },
+      yearwheelStatTitle: { fontFamily: 'var(--display)', fontSize: 22, fontWeight: 400, color: 'var(--ink)' },
+      yearwheelLayout: { display: 'grid', gridTemplateColumns: '380px 1fr', gap: 32, alignItems: 'start' },
+      yearwheelLayoutMobile: { display: 'flex', flexDirection: 'column', gap: 24 },
+      yearwheelWheel: { background: 'var(--surface)', borderRadius: 6, padding: 24, border: '1px solid var(--line)' },
+      yearwheelLegend: { display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 16, justifyContent: 'center', fontSize: 11, color: 'var(--ink-soft)' },
+      yearwheelLegendItem: { display: 'inline-flex', alignItems: 'center', gap: 5 },
+      yearwheelLegendDot: { width: 10, height: 10, borderRadius: 2, display: 'inline-block' },
+      yearwheelDetail: { minWidth: 0 },
+      yearwheelDetailHead: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, paddingBottom: 12, borderBottom: '1px solid var(--line)' },
+      yearwheelMonthTitle: { fontFamily: 'var(--display)', fontSize: 24, fontWeight: 400, lineHeight: 1.1 },
+      yearwheelTaskList: { display: 'flex', flexDirection: 'column', gap: 8 },
+      yearwheelTask: { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 4 },
+      yearwheelTaskDone: { display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 4, opacity: 0.6 },
+      yearwheelCheck: { width: 20, height: 20, borderRadius: 4, border: '1.5px solid var(--line)', background: 'transparent', flexShrink: 0, cursor: 'pointer', marginTop: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+      yearwheelCheckDone: { width: 20, height: 20, borderRadius: 4, border: '1.5px solid var(--green)', background: 'var(--green)', flexShrink: 0, cursor: 'pointer', marginTop: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+      yearwheelTaskTitle: { fontSize: 14, fontWeight: 500, color: 'var(--ink)' },
+      yearwheelTaskTitleDone: { fontSize: 14, fontWeight: 500, color: 'var(--ink-soft)', textDecoration: 'line-through' },
+      yearwheelTaskMeta: { fontSize: 11, color: 'var(--ink-faint)', marginTop: 2, display: 'flex', gap: 4, flexWrap: 'wrap' },
+      yearwheelCategory: { fontWeight: 500 },
+      yearwheelEmpty: { padding: 20, textAlign: 'center', color: 'var(--ink-faint)', fontSize: 13, background: 'var(--surface)', border: '1px dashed var(--line)', borderRadius: 4 },
+      yearwheelHint: { marginTop: 16, padding: '10px 12px', background: 'var(--bg)', borderRadius: 4, fontSize: 12, color: 'var(--ink-soft)' },
       assigneeChipInline: { display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--ink-soft)' },
       assigneeDotSmall: { width: 16, height: 16, borderRadius: '50%', background: 'var(--ink)', color: 'var(--bg)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 600 },
       handoverInput: { background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 3, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 },
