@@ -867,7 +867,12 @@
                 <Icon name="menu" size={22} />
               </button>
               <div style={styles.mobileTopbarTitle}>
-                <span style={styles.mobileMark}>◐</span> Arbejdsplatform
+                <img
+                  src="https://www.horntand.dk/wp-content/themes/atweb/assets/images/logo-simple.png"
+                  alt="Tandlægerne Nissen og Jensen"
+                  style={styles.mobileLogo}
+                  onError={(e) => { e.target.style.display = 'none'; }}
+                />
               </div>
               <div style={styles.mobileTopbarAvatar}>{userProfile.name[0].toUpperCase()}</div>
             </div>
@@ -1255,7 +1260,12 @@
           <div style={styles.loginGrain}></div>
           <div style={styles.loginCard}>
             <div style={styles.loginBrand}>
-              <div style={styles.loginMark}>◐</div>
+              <img
+                src="https://www.horntand.dk/wp-content/themes/atweb/assets/images/logo-simple.png"
+                alt="Tandlægerne Nissen og Jensen"
+                style={styles.loginLogo}
+                onError={(e) => { e.target.style.display = 'none'; }}
+              />
               <div>
                 <div style={styles.loginTitle}>Arbejdsplatform</div>
                 <div style={styles.loginSubtitle}>{mode === 'reset' ? 'Nulstil adgangskode' : 'Opgaver · Retningslinjer · Reception'}</div>
@@ -1341,8 +1351,12 @@
       return (
         <aside style={isMobile ? styles.sidebarMobile : styles.sidebar}>
           <div style={styles.sidebarBrand}>
-            <div style={styles.sidebarMark}>◐</div>
-            <div style={styles.sidebarBrandText}>Arbejdsplatform</div>
+            <img
+              src="https://www.horntand.dk/wp-content/themes/atweb/assets/images/logo-simple.png"
+              alt="Tandlægerne Nissen og Jensen"
+              style={styles.sidebarLogo}
+              onError={(e) => { e.target.style.display = 'none'; }}
+            />
           </div>
           <nav style={styles.nav}>
             {topItems.map(item => {
@@ -3322,6 +3336,9 @@
       sidebar: { width: 248, background: 'var(--surface)', borderRight: '1px solid var(--line)', display: 'flex', flexDirection: 'column', padding: 20, position: 'sticky', top: 0, height: '100vh' },
       sidebarMobile: { width: '100%', background: 'var(--surface)', display: 'flex', flexDirection: 'column', padding: 20, height: '100vh', overflow: 'auto' },
       sidebarBrand: { display: 'flex', alignItems: 'center', gap: 11, padding: '8px 10px', marginBottom: 28 },
+      sidebarLogo: { maxWidth: '100%', maxHeight: 70, objectFit: 'contain', display: 'block', margin: '0 auto' },
+      mobileLogo: { maxHeight: 32, maxWidth: '100%', objectFit: 'contain' },
+      loginLogo: { maxHeight: 56, maxWidth: 180, objectFit: 'contain' },
       sidebarMark: { width: 30, height: 30, borderRadius: '50%', background: 'var(--ink)', color: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 },
       sidebarBrandText: { fontFamily: 'var(--display)', fontSize: 18, fontWeight: 500, letterSpacing: '-0.01em' },
       nav: { display: 'flex', flexDirection: 'column', gap: 2, flex: 1 },
